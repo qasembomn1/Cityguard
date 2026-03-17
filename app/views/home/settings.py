@@ -4,8 +4,9 @@ import os
 from datetime import datetime
 from typing import Any
 
-from PySide6.QtCore import QDate, Qt, QTimer, Signal
-from PySide6.QtGui import QIcon
+from PySide6.QtCore import QDate, Qt, QTimer, Signal,QRectF
+from PySide6.QtGui import QIcon,QColor,QPainter,QPainterPath
+from app.constants._init_ import Constants
 from PySide6.QtWidgets import (
     QButtonGroup,
     QComboBox,
@@ -1300,14 +1301,11 @@ class SettingsPage(QWidget):
             return
         self._apply_repeated_setting(updated)
         self._toast_success("Repeated Settings", self.store.last_message or "Repeated settings updated successfully.")
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        path = QPainterPath()
+        path.addRect(QRectF(self.rect()))
+        p.fillPath(path, QColor(Constants.DARK_BG))   # dark bg — cards float above it
+        super().paintEvent(event)
 
-
-class MainWindow(QMainWindow):
-    navigate = Signal(str)
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.setWindowTitle("Settings")
-        page = SettingsPage()
-        page.navigate.connect(self.navigate.emit)
-        self.setCentralWidget(page)

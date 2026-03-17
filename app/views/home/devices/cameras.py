@@ -16,15 +16,9 @@ from app.store.home.devices.client_store import ClientStore
 from app.store.home.devices.camera_type_store import CameraTypeStore
 from app.store.auth import AuthStore
 
-from app.services.auth.auth_service import AuthService
-from app.services.home.devices.access_control_service import AccessControlService
-from app.services.home.devices.camera_service import CameraService
-from app.services.home.devices.client_service import ClientService
-from app.services.home.devices.camera_type_service import CameraTypeService
-from PySide6.QtCore import QPointF, Qt, QTimer, Signal, QSize
+from PySide6.QtCore import QPointF, Qt, QTimer, Signal, QSize,QRectF
 from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QApplication,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -35,7 +29,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QMainWindow,
     QMessageBox,
     QPushButton,
     QSizePolicy,
@@ -47,7 +40,7 @@ from PySide6.QtWidgets import (
 )
 from app.ui.button import PrimeButton
 from app.ui.table import PrimeDataTable, PrimeTableColumn
-
+from app.constants._init_ import Constants
 
 _ICONS_DIR = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "../../../resources/icons")
@@ -1291,8 +1284,66 @@ class CameraFormDialog(QDialog):
         self.access_control_store = access_control_store
         self.camera = camera
         self.is_edit_mode = camera is not None
+        self.setObjectName("cameraFormDialog")
         self.setWindowTitle("Edit Camera" if self.is_edit_mode else "Add New Camera")
         self.resize(1100, 780)
+        self.setStyleSheet(
+            """
+            QDialog#cameraFormDialog {
+                background: #222222;
+                color: #f1f5f9;
+            }
+            QGroupBox {
+                background: #222222;
+                color: #f8fafc;
+                border: 1px solid #3a424f;
+                border-radius: 10px;
+                margin-top: 14px;
+                padding-top: 12px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 12px;
+                padding: 0 6px;
+                color: #f8fafc;
+                background: #222222;
+            }
+            QLabel {
+                color: #dbe4f3;
+                font-size: 13px;
+                font-weight: 600;
+            }
+            QLineEdit,
+            QComboBox,
+            QAbstractSpinBox {
+                background: #222222;
+                border: 1px solid #4a5563;
+                border-radius: 8px;
+                color: #f8fafc;
+                padding: 8px 10px;
+                min-height: 24px;
+            }
+            QLineEdit:read-only {
+                color: #cbd5e1;
+            }
+            QLineEdit:focus,
+            QComboBox:focus,
+            QAbstractSpinBox:focus {
+                border: 1px solid #60a5fa;
+            }
+            QComboBox::drop-down {
+                border: none;
+                width: 28px;
+            }
+            QComboBox QAbstractItemView {
+                background: #222222;
+                border: 1px solid #4a5563;
+                color: #f8fafc;
+                selection-background-color: #35507f;
+                selection-color: #f8fafc;
+            }
+            """
+        )
 
         root = QVBoxLayout(self)
 
@@ -2321,93 +2372,10 @@ class CameraPage(QWidget):
         if not self.auth_store.current_user:
             return
         self.department_store.get_camera_for_user(self.auth_store.current_user.department_id, silent=True)
-
-
-# =========================
-# Bootstrap
-# =========================
-
-class MainWindow(QMainWindow):
-    def __init__(self) -> None:
-        super().__init__()
-        self.setWindowTitle("Camera Management - PySide6")
-        self.resize(1500, 900)
-
-        auth_service = AuthService()
-        client_service = ClientService()
-        camera_type_service = CameraTypeService()
-        access_control_service = AccessControlService()
-        camera_service = CameraService()
-
-        auth_store = AuthStore(auth_service)
-        client_store = ClientStore(client_service)
-        camera_type_store = CameraTypeStore(camera_type_service)
-        access_control_store = AccessControlStore(access_control_service)
-        department_store = DepartmentStore(camera_service)
-        camera_store = CameraStore(camera_service, department_store)
-
-        auth_store.load()
-        client_store.load()
-        camera_type_store.load()
-        access_control_store.load()
-        department_store.get_camera_for_user(auth_store.current_user.department_id if auth_store.current_user else None)
-
-        page = CameraPage(
-            auth_store,
-            client_store,
-            camera_type_store,
-            access_control_store,
-            department_store,
-            camera_store,
-        )
-        self.setCentralWidget(page)
-        self.setStyleSheet(
-            """
-            QWidget {
-                background: #0b1220;
-                color: #e5e7eb;
-                font-size: 13px;
-            }
-            QLineEdit, QComboBox, QSpinBox, QTextEdit, QTableWidget, QListWidget {
-                background: #111827;
-                border: 1px solid #374151;
-                border-radius: 8px;
-                padding: 6px;
-            }
-            QPushButton, QToolButton {
-                background: #2563eb;
-                border: none;
-                border-radius: 8px;
-                padding: 8px 14px;
-                color: white;
-            }
-            QPushButton:disabled, QToolButton:disabled {
-                background: #374151;
-                color: #9ca3af;
-            }
-            QGroupBox {
-                border: 1px solid #374151;
-                border-radius: 12px;
-                margin-top: 12px;
-                padding-top: 12px;
-                font-weight: 700;
-            }
-            QHeaderView::section {
-                background: #1f2937;
-                border: none;
-                padding: 8px;
-            }
-            """
-        )
-
-
-def main() -> None:
-    app = QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
-    window.showFullScreen()
-    sys.exit(app.exec())
-
-
-if __name__ == "__main__":
-    main()
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        path = QPainterPath()
+        path.addRect(QRectF(self.rect()))
+        p.fillPath(path, QColor(Constants.DARK_BG))   # dark bg — cards float above it
+        super().paintEvent(event)

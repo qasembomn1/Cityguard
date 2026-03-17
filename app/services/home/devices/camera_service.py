@@ -9,11 +9,12 @@ import urllib.request
 from typing import Any, Dict, List, Optional
 
 from app.models.camera import Camera
+from app.utils.env import resolve_http_base_url
 from app.utils.list import extract_dict_list
 
 
 def _base_url() -> str:
-    return os.getenv("Base_URL", "http://192.168.100.120:8800").strip().rstrip("/")
+    return resolve_http_base_url()
 
 
 def _auth_token() -> str:

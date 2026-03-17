@@ -20,5 +20,6 @@ if __name__ == "__main__":
     window = StartupLiveViewPage()
     install_english_digit_support(window)
     window.showFullScreen()
+    window.setWindowFlags(Qt.FramelessWindowHint)
     window.show()
     sys.exit(app.exec())

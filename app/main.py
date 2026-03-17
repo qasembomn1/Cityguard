@@ -20,8 +20,12 @@ from PySide6.QtGui import QIcon
 
 from app.ui.header import AppHeader
 from app.utils.qt_digits import install_english_digit_support
+from app.utils.env import load_runtime_env
 from app.ui.virtual_keyboard import install_virtual_keyboard, set_virtual_keyboard_toggle_visible
 from app.ui.toast import PrimeToastHost
+
+load_runtime_env()
+
 from app.views.auth.live_view import StartupLiveViewPage
 from app.views.auth.login import LoginWindow
 from app.views.home.control_panel import ControlPanel, CONTROL_PANEL_TABS
@@ -304,9 +308,7 @@ class MainWindow(QWidget):
     def _on_header_navigate(self, path: str):
         """Header emitted navigate — just switch the stacked view."""
         if path == "/":
-            self._ensure_tv_mode_off()
-            self._deactivate_live_view_overlays()
-            self.stack.setCurrentIndex(0)
+            self._show_view("/")
             return
         self._activate_route(path)
         self._show_view(path)
@@ -316,9 +318,7 @@ class MainWindow(QWidget):
         self.logout_requested.emit()
 
     def reset_to_home(self):
-        self._ensure_tv_mode_off()
-        self._deactivate_live_view_overlays()
-        self.stack.setCurrentIndex(0)
+        self._show_view("/")
         self.header.set_current("/")
 
     def navigate_to(self, path: str):
@@ -330,9 +330,6 @@ class MainWindow(QWidget):
 
     def _show_view(self, path: str):
         """Switch the stack to the view for *path*, creating route screens lazily."""
-        if path != "/stream/live":
-            self._ensure_tv_mode_off()
-            self._deactivate_live_view_overlays()
         if path != "/" and path not in self._view_index:
             self._ensure_view(path)
 
@@ -341,6 +338,11 @@ class MainWindow(QWidget):
         else:
             # View not yet registered — fall back to control-panel home
             self.stack.setCurrentIndex(0)
+
+        if path != "/stream/live":
+            self._ensure_tv_mode_off()
+            self._deactivate_live_view_overlays()
+            self._destroy_live_view()
 
     def _ensure_tv_mode_off(self):
         if self._live_view_widget is not None:
@@ -367,6 +369,30 @@ class MainWindow(QWidget):
         """Register a view widget for a route path (call before showing)."""
         idx = self.stack.addWidget(widget)
         self._view_index[path] = idx
+
+    def _destroy_live_view(self):
+        live_view = self._live_view_widget
+        live_view_index = self._view_index.get("/stream/live")
+        if live_view is None or live_view_index is None:
+            return
+
+        try:
+            live_view.set_tv_mode(False)
+        except Exception:
+            pass
+        try:
+            live_view.deactivate_overlays()
+        except Exception:
+            pass
+
+        self.stack.removeWidget(live_view)
+        for route, index in list(self._view_index.items()):
+            if index > live_view_index:
+                self._view_index[route] = index - 1
+        self._view_index.pop("/stream/live", None)
+        live_view.deleteLater()
+        self._live_view_widget = None
+        self._on_live_tv_mode_changed(False)
 
     def _activate_route(self, path: str):
         meta = _tab_meta_for_path(path)
@@ -501,20 +527,24 @@ class MainWindow(QWidget):
         return candidates[0][2]
 
     def _build_camera_page(self) -> QWidget:
-        from app.views.home.devices.cameras import (
+        from app.services.auth.auth_service import AuthService
+        from app.services.home.devices.access_control_service import (
             AccessControlService,
-            AccessControlStore,
-            AuthService,
-            AuthStore,
-            CameraPage,
-            CameraService,
-            CameraStore,
-            CameraTypeService,
-            CameraTypeStore,
-            ClientService,
-            ClientStore,
-            DepartmentStore,
         )
+        from app.services.home.devices.camera_service import CameraService
+        from app.services.home.devices.camera_type_service import (
+            CameraTypeService,
+        )
+        from app.services.home.devices.client_service import ClientService
+        from app.store.auth import AuthStore
+        from app.store.home.devices.access_control_store import (
+            AccessControlStore,
+        )
+        from app.store.home.devices.camera_store import CameraStore
+        from app.store.home.devices.camera_type_store import CameraTypeStore
+        from app.store.home.devices.client_store import ClientStore
+        from app.store.home.user.department_store import DepartmentStore
+        from app.views.home.devices.cameras import CameraPage
 
         auth_service = AuthService()
         client_service = ClientService()
@@ -578,22 +608,40 @@ class RootWindow(QWidget):
         self.stack = QStackedWidget(self)
         root.addWidget(self.stack, 1)
 
-        self.startup_live_page = StartupLiveViewPage()
+        self.startup_live_page = None
         self.login_page = LoginWindow()
         self.dashboard_page = MainWindow()
 
-        self.stack.addWidget(self.startup_live_page)
         self.stack.addWidget(self.login_page)
         self.stack.addWidget(self.dashboard_page)
-        self.stack.setCurrentWidget(self.startup_live_page)
+        self.stack.setCurrentWidget(self._ensure_startup_live_page())
 
-        self.startup_live_page.loginRequested.connect(self._show_login_page)
-        self.startup_live_page.tvModeChanged.connect(self._on_startup_live_tv_mode_changed)
         self.login_page.login_success.connect(self._on_login_success)
         self.login_page.back_requested.connect(self._show_startup_live_page)
         self.dashboard_page.logout_requested.connect(self._on_logout_requested)
 
+    def _ensure_startup_live_page(self):
+        if self.startup_live_page is not None:
+            return self.startup_live_page
+
+        self.startup_live_page = StartupLiveViewPage()
+        self.startup_live_page.loginRequested.connect(self._show_login_page)
+        self.startup_live_page.tvModeChanged.connect(self._on_startup_live_tv_mode_changed)
+        self.stack.insertWidget(0, self.startup_live_page)
+        return self.startup_live_page
+
+    def _dispose_startup_live_page(self):
+        page = self.startup_live_page
+        if page is None:
+            return
+        self._deactivate_startup_live_overlays()
+        self.stack.removeWidget(page)
+        page.deleteLater()
+        self.startup_live_page = None
+
     def _deactivate_startup_live_overlays(self):
+        if self.startup_live_page is None:
+            return
         try:
             self.startup_live_page.set_tv_mode(False)
         except Exception:
@@ -604,21 +652,19 @@ class RootWindow(QWidget):
             pass
 
     def _show_login_page(self):
-        self._deactivate_startup_live_overlays()
-        self.startup_live_page.close()
+        self._dispose_startup_live_page()
         self.login_page.reset_form()
         self.stack.setCurrentWidget(self.login_page)
         set_virtual_keyboard_toggle_visible(True)
 
     def _show_startup_live_page(self):
         self.login_page.reset_form()
-        self.startup_live_page.show()
-        self.stack.setCurrentWidget(self.startup_live_page)
-        self._on_startup_live_tv_mode_changed(bool(getattr(self.startup_live_page, "is_tv_mode", False)))
+        page = self._ensure_startup_live_page()
+        self.stack.setCurrentWidget(page)
+        self._on_startup_live_tv_mode_changed(bool(getattr(page, "is_tv_mode", False)))
 
     def _on_login_success(self):
-        self._deactivate_startup_live_overlays()
-        self.startup_live_page.close()
+        self._dispose_startup_live_page()
         self.dashboard_page.reset_to_home()
         self.stack.setCurrentWidget(self.dashboard_page)
         set_virtual_keyboard_toggle_visible(True)
@@ -631,16 +677,21 @@ class RootWindow(QWidget):
         self._show_startup_live_page()
 
     def _on_startup_live_tv_mode_changed(self, enabled: bool):
-        if self.stack.currentWidget() is self.startup_live_page:
+        if self.startup_live_page is not None and self.stack.currentWidget() is self.startup_live_page:
             set_virtual_keyboard_toggle_visible(not enabled)
 
 
 def main():
+    load_runtime_env()
     app = QApplication(sys.argv)
     app.setWindowIcon(QIcon(Logo_path))
 
     window = RootWindow()
     install_english_digit_support(window)
     install_virtual_keyboard(window)
+    window.setWindowFlags(Qt.FramelessWindowHint)
     window.showFullScreen()
     sys.exit(app.exec())
+
+if __name__ == "__main__":
+    main()

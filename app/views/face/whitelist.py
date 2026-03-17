@@ -4,9 +4,10 @@ import base64
 import os
 from typing import Dict, List, Optional, Type
 
-from PySide6.QtCore import QSize, QUrl, Qt, Signal
-from PySide6.QtGui import QIcon, QPixmap
+from PySide6.QtCore import QSize, QUrl, Qt, Signal,QRectF
+from PySide6.QtGui import QIcon, QPixmap,QPainter,QPainterPath,QColor
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
+from app.constants._init_ import Constants
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -153,14 +154,22 @@ class RemoteImageLabel(QLabel):
         self._reply.finished.connect(self._on_done)
 
     def _abort_reply(self) -> None:
-        if self._reply is None:
+        reply = self._reply
+        self._reply = None
+        if reply is None:
             return
         try:
-            self._reply.abort()
+            reply.finished.disconnect(self._on_done)
         except Exception:
             pass
-        self._reply.deleteLater()
-        self._reply = None
+        try:
+            reply.abort()
+        except Exception:
+            pass
+        try:
+            reply.deleteLater()
+        except Exception:
+            pass
 
     def _on_done(self) -> None:
         reply = self._reply
@@ -1582,6 +1591,16 @@ class FaceRegistryPage(QWidget):
 
     def _show_error(self, text: str) -> None:
         self.toast.error(self.toast_title, text)
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        path = QPainterPath()
+        path.addRect(QRectF(self.rect()))
+        p.fillPath(path, QColor(Constants.DARK_BG))   # dark bg — cards float above it
+        super().paintEvent(event)
+
+
+
 
 
 class WhitelistPage(FaceRegistryPage):

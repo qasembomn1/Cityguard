@@ -5,8 +5,9 @@ import os
 from datetime import datetime
 from typing import Dict, List, Optional
 
-from PySide6.QtCore import QDateTime, QSize, Qt, Signal
-from PySide6.QtGui import QIcon
+from PySide6.QtCore import QDateTime, QSize, Qt, Signal,QRectF
+from PySide6.QtGui import QIcon,QColor,QPainter,QPainterPath
+from app.constants._init_ import Constants
 from PySide6.QtWidgets import (
     QFileDialog,
     QDateTimeEdit,
@@ -585,3 +586,12 @@ class LprReportPage(QWidget):
 
     def _show_error(self, text: str) -> None:
         self.toast.error("LPR Report", text)
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        path = QPainterPath()
+        path.addRect(QRectF(self.rect()))
+        p.fillPath(path, QColor(Constants.DARK_BG))   # dark bg — cards float above it
+        super().paintEvent(event)
+
+

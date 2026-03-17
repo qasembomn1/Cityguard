@@ -3,8 +3,9 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, List, Optional
 
-from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QIcon
+from PySide6.QtCore import QSize, Qt, Signal,QRectF
+from PySide6.QtGui import QIcon,QPainter,QPainterPath,QColor
+from app.constants._init_ import Constants
 from PySide6.QtWidgets import (
     QDialog,
     QFormLayout,
@@ -593,3 +594,12 @@ class LprRegistryPage(QWidget):
 
     def _show_info(self, text: str) -> None:
         QMessageBox.information(self, self.page_title, text)
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        path = QPainterPath()
+        path.addRect(QRectF(self.rect()))
+        p.fillPath(path, QColor(Constants.DARK_BG))   # dark bg — cards float above it
+        super().paintEvent(event)
+
+

@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional
 
 from PySide6.QtCore import QEvent, QMimeData, QObject, QPoint, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
-from PySide6.QtGui import QAction, QColor, QDrag, QIcon, QPainter, QPalette, QPixmap
+from PySide6.QtGui import QAction, QColor, QDrag, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -39,6 +39,7 @@ from app.services.home.stream.screen_service import ScreenService
 from app.store.home.stream.screen_store import ScreenStore
 from app.ui.select import PrimeSelect
 from app.ui.toast import PrimeToastHost
+from app.utils.env import resolve_http_base_url
 from app.views.home.stream.screens import ScreensManagerDialog as StreamScreensManagerDialog
 try:
     from PySide6.QtWebSockets import QWebSocket
@@ -142,25 +143,19 @@ def _grid_size_value(value: object, default: int = 2) -> int:
     return default
 
 
-def _compose_rtsp_url(ip: str, username: str, password: str, port: int, path_hint: str = "") -> str:
+def _compose_rtsp_url(ip: str, username: str, password: str, port: int, path: str = "") -> str:
     host = (ip or "").strip()
     if not host:
         return ""
-    path = (path_hint or os.getenv("RTSP_PATH", "/Streaming/Channels/101")).strip()
-    if path.startswith("rtsp://"):
-        return path
-    if path and not path.startswith("/"):
-        path = f"/{path}"
-    encoded_user = urllib.parse.quote(username or "", safe="")
-    encoded_pass = urllib.parse.quote(password or "", safe="")
-    auth = ""
-    if encoded_user and encoded_pass:
-        auth = f"{encoded_user}:{encoded_pass}@"
-    elif encoded_user:
-        auth = f"{encoded_user}@"
-    elif encoded_pass:
-        auth = f":{encoded_pass}@"
-    return f"rtsp://{auth}{host}:{port}{path}"
+    
+
+    if username and password:
+        return f"rtsp://{username}:{password}@{host}:{port}{path}"
+    else:
+        return f"rtsp://{host}:{port}{path}1"
+
+
+    
 
 
 def _camera_ip(camera: object) -> str:
@@ -176,20 +171,16 @@ def _camera_rtsp_urls(camera: object) -> tuple[str, str, str]:
     if not isinstance(camera_type, dict):
         camera_type = {}
 
-    main_path = str(camera_type.get("main_url") or os.getenv("RTSP_MAIN_PATH") or "/Streaming/Channels/101").strip()
-    sub_path = str(camera_type.get("sub_url") or os.getenv("RTSP_SUB_PATH") or "/Streaming/Channels/102").strip()
-    raw_rtsp = str(getattr(camera, "rtsp_url", "") or getattr(camera, "stream_url", "") or getattr(camera, "url", "") or "").strip()
+    main_path = str(camera_type.get("main_url"))
+    sub_path = str(camera_type.get("sub_url"))
 
-    rtsp_main = _compose_rtsp_url(ip=ip, username=username, password=password, port=port, path_hint=main_path)
-    rtsp_sub = _compose_rtsp_url(ip=ip, username=username, password=password, port=port, path_hint=sub_path)
-    return rtsp_sub, rtsp_main, raw_rtsp
+    rtsp_main = _compose_rtsp_url(ip=ip, username=username, password=password, port=port, path=main_path)
+    rtsp_sub = _compose_rtsp_url(ip=ip, username=username, password=password, port=port, path=sub_path)
+    return rtsp_sub, rtsp_main
 
 
 def _base_http_url() -> str:
-    raw = os.getenv("Base_URL", "http://192.168.100.120:8800").strip().rstrip("/")
-    if raw.startswith("http://") or raw.startswith("https://"):
-        return raw
-    return f"http://{raw}"
+    return resolve_http_base_url()
 
 
 def _monitor_ws_url() -> str:
@@ -1729,10 +1720,10 @@ class GridCell(QFrame):
     def _effective_rtsp_url(self) -> str:
         if self.camera is None:
             return ""
-        rtsp_sub, rtsp_main, rtsp_raw = _camera_rtsp_urls(self.camera)
+        rtsp_sub, rtsp_main = _camera_rtsp_urls(self.camera)
         if self._use_main_stream:
-            return (rtsp_main or rtsp_sub or rtsp_raw).strip()
-        return (rtsp_sub or rtsp_raw or rtsp_main).strip()
+            return (rtsp_main or rtsp_sub).strip()
+        return (rtsp_sub or rtsp_main).strip()
 
     def refresh(self):
         has_camera = self.camera is not None
@@ -2229,10 +2220,16 @@ class CameraDashboard(QMainWindow):
         self.setWindowTitle("PySide6 Camera Monitor")
         self.resize(1520, 900)
 
-        from app.views.home.devices.cameras import (
+        from app.services.home.devices.camera_service import (
             CameraService as DevicesCameraService,
+        )
+        from app.services.home.devices.client_service import (
             ClientService as DevicesClientService,
+        )
+        from app.store.home.devices.client_store import (
             ClientStore as DevicesClientStore,
+        )
+        from app.store.home.user.department_store import (
             DepartmentStore as DevicesDepartmentStore,
         )
 

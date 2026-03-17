@@ -20,31 +20,62 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+try:
+    from shiboken6 import isValid as _qt_object_is_valid
+except Exception:  # pragma: no cover - runtime fallback
+    _qt_object_is_valid = None
+
 
 EditableWidget = QLineEdit | QTextEdit | QPlainTextEdit
 
 
+def _is_alive(widget: QObject | None) -> bool:
+    if widget is None:
+        return False
+    if _qt_object_is_valid is not None:
+        try:
+            return bool(_qt_object_is_valid(widget))
+        except Exception:
+            return False
+    try:
+        widget.objectName()
+    except RuntimeError:
+        return False
+    except Exception:
+        return True
+    return True
+
+
 def _resolve_target(widget: QObject | None) -> EditableWidget | None:
     current = widget
-    while current is not None:
+    while _is_alive(current):
         if isinstance(current, QLineEdit):
             return current
         if isinstance(current, (QTextEdit, QPlainTextEdit)):
             return current
         if isinstance(current, QAbstractSpinBox):
-            line_edit = current.lineEdit()
-            if line_edit is not None:
+            try:
+                line_edit = current.lineEdit()
+            except RuntimeError:
+                line_edit = None
+            if _is_alive(line_edit):
                 return line_edit
-        current = current.parent()
+        try:
+            current = current.parent()
+        except RuntimeError:
+            return None
     return None
 
 
 def _can_type_into(widget: EditableWidget | None) -> bool:
-    if widget is None or not widget.isEnabled():
+    if not _is_alive(widget):
         return False
-    if isinstance(widget, QLineEdit):
+    try:
+        if not widget.isEnabled():
+            return False
         return not widget.isReadOnly()
-    return not widget.isReadOnly()
+    except RuntimeError:
+        return False
 
 
 class FloatingKeyboard(QFrame):
@@ -238,6 +269,8 @@ class FloatingKeyboard(QFrame):
         self._root = root
 
     def set_target(self, widget: EditableWidget | None) -> None:
+        if not _is_alive(widget):
+            widget = None
         self._target = widget
         self.header_title.setText("Keyboard" if widget is None else f"Keyboard: {type(widget).__name__}")
 
@@ -252,6 +285,8 @@ class FloatingKeyboard(QFrame):
         self.raise_()
 
     def current_target(self) -> EditableWidget | None:
+        if not _is_alive(self._target):
+            self._target = None
         return self._target
 
     def hide(self) -> None:
@@ -260,20 +295,26 @@ class FloatingKeyboard(QFrame):
 
     def contains_widget(self, widget: QObject | None) -> bool:
         current = widget
-        while current is not None:
+        while _is_alive(current):
             if current is self:
                 return True
-            current = current.parent()
+            try:
+                current = current.parent()
+            except RuntimeError:
+                return False
         return False
 
     def contains_global_point(self, point: QPoint) -> bool:
         return self.isVisible() and self.frameGeometry().contains(point)
 
     def _move_to_default_position(self) -> None:
-        target = self._target
+        target = self.current_target()
         screen = None
         if target is not None:
-            screen = target.screen()
+            try:
+                screen = target.screen()
+            except RuntimeError:
+                screen = None
         if screen is None and self._root is not None:
             screen = self._root.screen()
         geometry = screen.availableGeometry() if screen is not None else (self._root.frameGeometry() if self._root.isVisible() else self._root.geometry())
@@ -335,6 +376,7 @@ class FloatingKeyboard(QFrame):
         if target is None:
             return
         window = target.window()
+        window.setWindowFlags(Qt.FramelessWindowHint)
         if window is not None:
             window.focusNextChild()
 
@@ -351,11 +393,16 @@ class FloatingKeyboard(QFrame):
         target.setTextCursor(cursor)
 
     def _prepare_target_for_input(self) -> EditableWidget | None:
-        target = self._target
+        target = self.current_target()
         if not _can_type_into(target):
+            self._target = None
             return None
-        if not target.hasFocus():
-            target.setFocus(Qt.FocusReason.OtherFocusReason)
+        try:
+            if not target.hasFocus():
+                target.setFocus(Qt.FocusReason.OtherFocusReason)
+        except RuntimeError:
+            self._target = None
+            return None
         return target
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
@@ -474,7 +521,10 @@ class VirtualKeyboardManager(QObject):
     def show_keyboard(self) -> None:
         app = QApplication.instance()
         focus_target = _resolve_target(app.focusWidget()) if app is not None else None
-        target = focus_target if _can_type_into(focus_target) else self._last_target
+        last_target = self._last_target if _can_type_into(self._last_target) else None
+        if last_target is None:
+            self._last_target = None
+        target = focus_target if _can_type_into(focus_target) else last_target
         if not _can_type_into(target):
             return
         self._keyboard.show_for(target)

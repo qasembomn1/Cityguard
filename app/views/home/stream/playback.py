@@ -7,8 +7,8 @@ import subprocess
 import tempfile
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
-from PySide6.QtCore import QDate, QObject, QPoint, QRunnable, QSignalBlocker, QSize, Qt, QThreadPool, QTimer, Signal
-from PySide6.QtGui import QColor, QIcon, QPainter, QPaintEvent, QPen, QPixmap
+from PySide6.QtCore import QDate, QObject, QPoint, QRunnable, QSignalBlocker, QSize, Qt, QThreadPool, QTimer, Signal,QRectF
+from PySide6.QtGui import QColor, QIcon, QPainter, QPaintEvent, QPen, QPixmap,QPainterPath
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -35,6 +35,7 @@ from app.services.home.stream.playback_service import PlaybackService
 from app.ui.checkbox import PrimeCheckBox
 from app.ui.select import PrimeSelect
 from app.ui.toast import PrimeToastHost
+from app.constants._init_ import Constants
 
 PLAYER_COLORS = ["#16a34a", "#1e40af", "#ea580c", "#312e81"]
 MPV_EMBED_PANSCAN = 1.0
@@ -1752,6 +1753,13 @@ class PlaybackPage(QWidget):
 
     def _rebuild_legend(self) -> None:
         return
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        path = QPainterPath()
+        path.addRect(QRectF(self.rect()))
+        p.fillPath(path, QColor(Constants.DARK_BG))   # dark bg — cards float above it
+        super().paintEvent(event)
 
     def _update_play_pause_button(self, paused: bool) -> None:
         icon_type = (

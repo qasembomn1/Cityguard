@@ -505,7 +505,6 @@ if __name__ == "__main__":
 
     window = LoginWindow()
     install_english_digit_support(window)
+    window.setWindowFlags(Qt.FramelessWindowHint)
     window.showFullScreen()
-    window.show()
-
     sys.exit(app.exec())

@@ -8,8 +8,8 @@ import urllib.parse
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from PySide6.QtCore import QObject, QSize, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QIcon
+from PySide6.QtCore import QObject, QSize, Qt, QTimer, QUrl, Signal,QRectF
+from PySide6.QtGui import QIcon,QPainter,QPainterPath,QColor
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-
+from app.constants._init_ import Constants
 try:
     from PySide6.QtWebSockets import QWebSocket
 except Exception:  # pragma: no cover - optional runtime dependency
@@ -41,6 +41,7 @@ from app.services.home.devices.client_service import ClientService
 from app.store.auth import AuthStore
 from app.store.home.devices.client_store import ClientStore
 from app.ui.table import PrimeDataTable, PrimeTableColumn
+from app.utils.env import resolve_http_base_url
 
 
 _ICONS_DIR = os.path.abspath(
@@ -59,10 +60,7 @@ if __package__ in (None, ""):
 
 
 def _base_http_url() -> str:
-    raw = os.getenv("Base_URL", "http://192.168.100.120:8800").strip().rstrip("/")
-    if raw.startswith("http://") or raw.startswith("https://"):
-        return raw
-    return f"http://{raw}"
+    return resolve_http_base_url()
 
 
 def _monitor_ws_url() -> str:
@@ -1125,23 +1123,10 @@ class ClientPage(QWidget):
 
     def _show_error(self, text: str) -> None:
         QMessageBox.critical(self, "Error", text)
-
-
-class MainWindow(QMainWindow):
-    def __init__(self) -> None:
-        super().__init__()
-        self.setWindowTitle("Client Management - PySide6")
-        self.resize(1480, 900)
-        self.setCentralWidget(ClientPage())
-
-
-def main() -> None:
-    app = QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
-    window.showFullScreen()
-    sys.exit(app.exec())
-
-
-if __name__ == "__main__":
-    main()
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        path = QPainterPath()
+        path.addRect(QRectF(self.rect()))
+        p.fillPath(path, QColor(Constants.DARK_BG))   # dark bg — cards float above it
+        super().paintEvent(event)

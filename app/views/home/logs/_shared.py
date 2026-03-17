@@ -3,8 +3,8 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, List, Optional
 
-from PySide6.QtCore import QDateTime, QSize, Qt, Signal
-from PySide6.QtGui import QIcon
+from PySide6.QtCore import QDateTime, QSize, Qt, Signal,QRectF
+from PySide6.QtGui import QIcon,QPainterPath,QPainter,QColor
 from PySide6.QtWidgets import (
     QDateTimeEdit,
     QFrame,
@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-
+from app.constants._init_ import Constants
 from app.models.logs import ActivityLogEntry
 from app.models.user import UserResponse
 from app.services.home.devices.camera_service import CameraService
@@ -584,6 +584,14 @@ class ActivityLogsPage(QWidget):
         layout.addWidget(label, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         layout.addStretch(1)
         return wrapper
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        path = QPainterPath()
+        path.addRect(QRectF(self.rect()))
+        p.fillPath(path, QColor(Constants.DARK_BG))   # dark bg — cards float above it
+        super().paintEvent(event)
+
 
 
 class ActivityLogsWindow(QMainWindow):

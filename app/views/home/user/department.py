@@ -4,8 +4,9 @@ import os
 import sys
 from typing import Any, Dict, List, Optional
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QIcon
+from PySide6.QtCore import Qt, Signal,QRectF
+from PySide6.QtGui import QIcon,QColor,QPainter,QPainterPath
+from app.constants._init_ import Constants
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -451,26 +452,12 @@ class DepartmentPage(QWidget):
 
     def _show_error(self, text: str) -> None:
         QMessageBox.critical(self, "Error", text)
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        path = QPainterPath()
+        path.addRect(QRectF(self.rect()))
+        p.fillPath(path, QColor(Constants.DARK_BG))   # dark bg — cards float above it
+        super().paintEvent(event)
 
 
-class MainWindow(QMainWindow):
-    navigate = Signal(str)
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.setWindowTitle("Department Management")
-        self.resize(1440, 900)
-        page = DepartmentPage()
-        page.navigate.connect(self.navigate.emit)
-        self.setCentralWidget(page)
-
-
-def main() -> None:
-    app = QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec())
-
-
-if __name__ == "__main__":
-    main()

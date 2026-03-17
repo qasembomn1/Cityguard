@@ -548,7 +548,6 @@ class ControlPanel(QWidget):
             QScrollBar:vertical    { background: transparent; width: 6px; margin: 0; }
             QScrollBar::handle:vertical {
                 background: rgba(255,255,255,45);
-                border-radius: 3px;
                 min-height: 24px;
             }
             QScrollBar::add-line:vertical,
@@ -597,7 +596,7 @@ class ControlPanel(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         path = QPainterPath()
-        path.addRoundedRect(QRectF(self.rect()), 16, 16)
+        path.addRect(QRectF(self.rect()))
         p.fillPath(path, QColor(_DARK_BG))   # dark bg — cards float above it
         super().paintEvent(event)
 

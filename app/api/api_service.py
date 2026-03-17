@@ -2,18 +2,80 @@ from __future__ import annotations
 
 import json
 import os
+import ssl
 import urllib.parse
+from dataclasses import asdict, is_dataclass
+from datetime import date, datetime, time
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 import httpx
+from app.utils.env import resolve_http_base_url
+
+
+def _build_ssl_context() -> ssl.SSLContext:
+    for env_name in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"):
+        candidate = (os.getenv(env_name) or "").strip()
+        if candidate and os.path.isfile(candidate):
+            return ssl.create_default_context(cafile=candidate)
+
+    for candidate in (
+        "/etc/ssl/certs/ca-certificates.crt",
+        "/etc/pki/tls/certs/ca-bundle.crt",
+        "/etc/ssl/ca-bundle.pem",
+        "/etc/ssl/cert.pem",
+    ):
+        if os.path.isfile(candidate):
+            return ssl.create_default_context(cafile=candidate)
+
+    return ssl.create_default_context()
+
+
+def _json_compatible(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, (datetime, date, time)):
+        return value.isoformat()
+    if is_dataclass(value):
+        return _json_compatible(asdict(value))
+    if isinstance(value, dict):
+        return {str(key): _json_compatible(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_compatible(item) for item in value]
+    to_dict = getattr(value, "to_dict", None)
+    if callable(to_dict):
+        return _json_compatible(to_dict())
+    return value
+
+
+def _resolve_request_url(base_url: str, path: str) -> str:
+    raw_path = str(path or "").strip()
+    if raw_path.startswith(("http://", "https://")):
+        return raw_path
+
+    normalized_path = raw_path if raw_path.startswith("/") else f"/{raw_path}"
+    return f"{base_url}{normalized_path}"
 
 
 class ApiService:
     def __init__(self, base_url: str | None, timeout: float = 12.0):
-        resolved_base_url = (base_url or "http://192.168.100.120:8800").strip().rstrip("/")
+        resolved_base_url = resolve_http_base_url(base_url)
         self.base_url = resolved_base_url
         self.timeout = timeout
-        self.client = httpx.Client(timeout=self.timeout, follow_redirects=True)
+        self._client: httpx.Client | None = None
+
+    @property
+    def client(self) -> httpx.Client:
+        if self._client is None:
+            self._client = httpx.Client(
+                timeout=self.timeout,
+                follow_redirects=True,
+                trust_env=False,
+                verify=_build_ssl_context(),
+            )
+        return self._client
 
     def _auth_token(self) -> str:
         return (
@@ -32,8 +94,7 @@ class ApiService:
         auth: bool = False,
         headers: Optional[Dict[str, str]] = None,
     ) -> Any:
-        normalized_path = path if path.startswith("/") else f"/{path}"
-        url = f"{self.base_url}{normalized_path}"
+        url = _resolve_request_url(self.base_url, path)
         query = urllib.parse.urlencode(
             {k: v for k, v in (params or {}).items() if v is not None},
             doseq=True,
@@ -51,7 +112,13 @@ class ApiService:
         if headers:
             request_headers.update(headers)
 
-        body = json.dumps(data).encode("utf-8") if data is not None else None
+        try:
+            body = json.dumps(_json_compatible(data)).encode("utf-8") if data is not None else None
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"Unable to serialize request payload for {method.upper()} {url}: {exc}"
+            ) from exc
+
         try:
             response = self.client.request(
                 method=method.upper(),

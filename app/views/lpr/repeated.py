@@ -6,8 +6,9 @@ import urllib.parse
 from datetime import datetime
 from typing import Dict, List, Optional
 
-from PySide6.QtCore import QDate, QDateTime, QSize, Qt, QTime, QUrl, Signal
-from PySide6.QtGui import QIcon, QPixmap
+from PySide6.QtCore import QDate, QDateTime, QSize, Qt, QTime, QUrl, Signal,QRectF
+from PySide6.QtGui import QIcon, QPixmap,QColor,QPainter,QPainterPath
+from app.constants._init_ import Constants
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PySide6.QtWidgets import (
     QApplication,
@@ -44,6 +45,7 @@ from app.ui.multiselect import PrimeMultiSelect
 from app.ui.table import PrimeDataTable, PrimeTableColumn
 from app.ui.toast import PrimeToastHost
 from app.utils.digits import normalize_ascii_digits
+from app.utils.env import resolve_http_base_url
 
 
 _ICONS_DIR = os.path.abspath(
@@ -56,10 +58,7 @@ def _icon_path(name: str) -> str:
 
 
 def _base_http_url() -> str:
-    raw = os.getenv("Base_URL", "http://192.168.100.120:8800").strip().rstrip("/")
-    if raw.startswith(("http://", "https://")):
-        return raw
-    return f"http://{raw}"
+    return resolve_http_base_url()
 
 
 def _record_image_url(record: LprSearchResult, crop: bool = False) -> str:
@@ -1018,26 +1017,10 @@ class LprRepeatedPage(QWidget):
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
         self._update_filters_scroll_height()
-
-
-class MainWindow(QMainWindow):
-    navigate = Signal(str)
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.setWindowTitle("LPR Repeated Search")
-        self.resize(1500, 900)
-        page = LprRepeatedPage()
-        page.navigate.connect(self.navigate.emit)
-        self.setCentralWidget(page)
-
-
-def main() -> None:
-    app = QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec())
-
-
-if __name__ == "__main__":
-    main()
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        path = QPainterPath()
+        path.addRect(QRectF(self.rect()))
+        p.fillPath(path, QColor(Constants.DARK_BG))   # dark bg — cards float above it
+        super().paintEvent(event)
