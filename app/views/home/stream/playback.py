@@ -7,13 +7,11 @@ import subprocess
 import tempfile
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
-from PySide6.QtCore import QDate, QObject, QPoint, QRunnable, QSignalBlocker, QSize, Qt, QThreadPool, QTimer, Signal,QRectF
-from PySide6.QtGui import QColor, QIcon, QPainter, QPaintEvent, QPen, QPixmap,QPainterPath
+from PySide6.QtCore import QDate, QObject, QPoint, QRect, QRunnable, QSignalBlocker, QSize, Qt, QThreadPool, QTimer, Signal, QRectF, QVariantAnimation, QEasingCurve
+from PySide6.QtGui import QColor, QIcon, QPainter, QPaintEvent, QPen, QPixmap, QPainterPath, QBrush, QRadialGradient
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
-    QCalendarWidget,
-    QDateEdit,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -23,7 +21,6 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QPushButton,
     QSizePolicy,
-    QStyle,
     QVBoxLayout,
     QWidget,
 )
@@ -32,6 +29,7 @@ from app.models.camera import Camera
 from app.services.auth.auth_service import AuthService
 from app.services.home.devices.camera_service import CameraService
 from app.services.home.stream.playback_service import PlaybackService
+from app.ui.calendar import PrimeCalendar
 from app.ui.checkbox import PrimeCheckBox
 from app.ui.select import PrimeSelect
 from app.ui.toast import PrimeToastHost
@@ -122,12 +120,6 @@ def _format_label_time(value: int) -> str:
     return f"{minutes:02d}:{seconds:02d}"
 
 
-def _format_day_label(day_text: str) -> str:
-    date = QDate.fromString(day_text, "yyyy-MM-dd")
-    if not date.isValid():
-        return day_text
-    return f"{day_text}  {date.toString('dddd')}"
-
 
 def _segment_contains(segments: Iterable[Tuple[int, int]], value: int) -> bool:
     target = int(value or 0)
@@ -204,11 +196,11 @@ class PlaybackTimeline(QWidget):
         self._visible_start = 0
         self._visible_end = 86400
         self._current_time = 0
-        self.setMinimumHeight(68)
+        self.setMinimumHeight(72)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
     def sizeHint(self) -> QSize:
-        return QSize(800, 72)
+        return QSize(800, 80)
 
     def set_data(
         self,
@@ -242,18 +234,9 @@ class PlaybackTimeline(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.fillRect(self.rect(), QColor("#222222"))
 
-        outer = self._outer_rect()
-        if outer.width() <= 0 or outer.height() <= 0:
-            return
-
-        painter.setPen(QPen(QColor("rgba(255,255,255,0.08)"), 1))
-        painter.setBrush(QColor("#222222"))
-        painter.drawRoundedRect(outer, 8, 8)
-
         plot = self._plot_rect()
         if plot.width() <= 0 or plot.height() <= 0:
             return
-
         if self._visible_end <= self._visible_start:
             return
 
@@ -261,65 +244,63 @@ class PlaybackTimeline(QWidget):
         self._draw_grid(painter, plot, step)
 
         if not self._camera_ids:
-            painter.setPen(QColor("#94a3b8"))
+            painter.setPen(QColor("#64748b"))
             painter.drawText(plot, Qt.AlignmentFlag.AlignCenter, "Select up to 4 cameras to view playback.")
             return
 
-        row_gap = 2
         row_count = max(1, len(self._camera_ids))
-        available_height = plot.height() - ((row_count - 1) * row_gap)
-        row_height = max(3, min(6, available_height // row_count))
+        row_h = 8
+        row_gap = 5
+        total_h = row_count * row_h + (row_count - 1) * row_gap
+        row_start_y = plot.top() + (plot.height() - total_h) // 2
+
         for row_index, camera_id in enumerate(self._camera_ids):
-            row_top = plot.top() + row_index * (row_height + row_gap)
-            row_rect = plot.adjusted(0, row_top - plot.top(), 0, -(plot.bottom() - (row_top + row_height)))
+            row_top = row_start_y + row_index * (row_h + row_gap)
+            row_rect = plot.adjusted(0, row_top - plot.top(), 0, -(plot.bottom() - (row_top + row_h)))
             self._draw_row(painter, row_rect, row_index, camera_id)
 
         if self._visible_start <= self._current_time <= self._visible_end:
             xpos = self._time_to_x(plot, self._current_time)
-            painter.setPen(QPen(QColor("#ef4444"), 1))
-            painter.drawLine(xpos, plot.top() - 1, xpos, plot.bottom() + 3)
+            painter.setPen(QPen(QColor("#ef4444"), 2))
+            painter.drawLine(xpos, plot.top() - 4, xpos, plot.bottom() + 4)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(QColor("#ef4444")))
+            r = 4
+            painter.drawEllipse(xpos - r, plot.top() - 4 - r, r * 2, r * 2)
 
     def _draw_grid(self, painter: QPainter, plot: "QRect", step: int) -> None:
         painter.save()
         axis_font = painter.font()
-        axis_font.setPointSize(7)
+        axis_font.setPointSize(8)
         painter.setFont(axis_font)
-        painter.setPen(QPen(QColor("rgba(148,163,184,0.16)"), 1))
+
         start = self._visible_start - (self._visible_start % step)
         if start < self._visible_start:
             start += step
 
         for marker in range(start, self._visible_end + 1, step):
             xpos = self._time_to_x(plot, marker)
+            painter.setPen(QPen(QColor(148, 163, 184, 22), 1))
             painter.drawLine(xpos, plot.top(), xpos, plot.bottom())
             if marker != self._visible_start:
-                label = _format_label_time(marker)
-                painter.setPen(QColor("#94a3b8"))
-                painter.drawText(xpos - 14, plot.bottom() + 9, 40, 8, Qt.AlignmentFlag.AlignLeft, label)
-            painter.setPen(QPen(QColor("rgba(148,163,184,0.16)"), 1))
+                painter.setPen(QColor("#64748b"))
+                painter.drawText(xpos - 18, plot.bottom() + 4, 52, 12, Qt.AlignmentFlag.AlignLeft, _format_label_time(marker))
 
         xpos = self._time_to_x(plot, self._visible_end)
-        painter.setPen(QColor("#cbd5e1"))
-        painter.drawText(
-            xpos - 14,
-            plot.bottom() + 9,
-            48,
-            8,
-            Qt.AlignmentFlag.AlignLeft,
-            _format_label_time(self._visible_end),
-        )
+        painter.setPen(QColor("#94a3b8"))
+        painter.drawText(xpos - 24, plot.bottom() + 4, 56, 12, Qt.AlignmentFlag.AlignLeft, _format_label_time(self._visible_end))
         painter.restore()
 
     def _draw_row(self, painter: QPainter, row_rect: "QRect", row_index: int, camera_id: int) -> None:
-        base_color = QColor("rgba(255,255,255,0.12)")
         color = QColor(PLAYER_COLORS[row_index % len(PLAYER_COLORS)])
-        center_y = row_rect.center().y()
-        painter.setPen(QPen(base_color, 2))
-        painter.drawLine(row_rect.left(), center_y, row_rect.right(), center_y)
 
+        # Track lane background
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(color)
-        segment_height = min(4, max(3, row_rect.height()))
+        painter.setBrush(QBrush(QColor(255, 255, 255, 18)))
+        painter.drawRoundedRect(QRectF(row_rect), 3.0, 3.0)
+
+        # Recording segments
+        painter.setBrush(QBrush(color))
         for start, end in self._segments_by_camera.get(camera_id, []):
             if end < self._visible_start or start > self._visible_end:
                 continue
@@ -329,7 +310,7 @@ class PlaybackTimeline(QWidget):
             right = self._time_to_x(row_rect, clipped_end)
             if right <= left:
                 right = left + 2
-            painter.drawRoundedRect(left, center_y - (segment_height // 2), max(2, right - left), segment_height, 2, 2)
+            painter.drawRoundedRect(QRectF(left, row_rect.top(), max(2, right - left), row_rect.height()), 3.0, 3.0)
 
     def _label_step(self, visible_span: int) -> int:
         if visible_span <= 5 * 60:
@@ -357,34 +338,126 @@ class PlaybackTimeline(QWidget):
         value = self._visible_start + int(relative * (self._visible_end - self._visible_start))
         return max(0, min(86399, value))
 
-    def _outer_rect(self):
-        return self.rect().adjusted(8, 6, -8, -6)
-
     def _plot_rect(self):
-        return self._outer_rect().adjusted(8, 6, -8, -12)
+        return self.rect().adjusted(14, 10, -14, -18)
 
 
-class PlaybackMonthEdit(QDateEdit):
+
+
+class PlayPauseButton(QWidget):
+    """Circular play/pause button with animated hover glow."""
     clicked = Signal()
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
-        super().__init__(parent)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setReadOnly(True)
+    _SIZE = 44
 
-    def mousePressEvent(self, event) -> None:
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._paused = True
+        self._hovered = False
+        self._pressed = False
+        self._glow = 0.0
+
+        self.setFixedSize(self._SIZE, self._SIZE)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover)
+
+        self._anim = QVariantAnimation(self)
+        self._anim.setDuration(160)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._anim.valueChanged.connect(self._on_anim)
+
+    def set_paused(self, paused: bool) -> None:
+        self._paused = paused
+        self.update()
+
+    def _on_anim(self, v: float) -> None:
+        self._glow = v
+        self.update()
+
+    def enterEvent(self, event):
+        self._hovered = True
+        self._anim.stop()
+        self._anim.setStartValue(self._glow)
+        self._anim.setEndValue(1.0)
+        self._anim.start()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._hovered = False
+        self._pressed = False
+        self._anim.stop()
+        self._anim.setStartValue(self._glow)
+        self._anim.setEndValue(0.0)
+        self._anim.start()
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            self.clicked.emit()
-            event.accept()
-            return
+            self._pressed = True
+            self.update()
         super().mousePressEvent(event)
 
-    def keyPressEvent(self, event) -> None:
-        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space, Qt.Key.Key_Down):
-            self.clicked.emit()
-            event.accept()
-            return
-        super().keyPressEvent(event)
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self._pressed:
+            self._pressed = False
+            self.update()
+            if self.rect().contains(event.position().toPoint()):
+                self.clicked.emit()
+        super().mouseReleaseEvent(event)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        cx = self.width() / 2
+        cy = self.height() / 2
+        r = (self._SIZE - 2) / 2
+
+        # glow halo
+        if self._glow > 0:
+            halo = QRadialGradient(cx, cy, r + 8)
+            alpha = int(60 * self._glow)
+            halo.setColorAt(0.0, QColor(255, 255, 255, alpha))
+            halo.setColorAt(1.0, QColor(255, 255, 255, 0))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QBrush(halo))
+            p.drawEllipse(QRectF(cx - r - 8, cy - r - 8, (r + 8) * 2, (r + 8) * 2))
+
+        # circle background
+        if self._pressed:
+            bg = QColor("#3a4a6a")
+        elif self._hovered:
+            bg = QColor("#2e3f5e")
+        else:
+            bg = QColor("#1e2535")
+
+        border_alpha = int(180 + 75 * self._glow)
+        p.setPen(QPen(QColor(255, 255, 255, border_alpha), 1.5))
+        p.setBrush(QBrush(bg))
+        p.drawEllipse(QRectF(cx - r, cy - r, r * 2, r * 2))
+
+        # icon (play triangle or pause bars)
+        icon_color = QColor(255, 255, 255, 230)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(icon_color))
+
+        if self._paused:
+            # play triangle centered
+            tri = QPainterPath()
+            tx = cx - 5
+            tri.moveTo(tx, cy - 7)
+            tri.lineTo(tx + 13, cy)
+            tri.lineTo(tx, cy + 7)
+            tri.closeSubpath()
+            p.drawPath(tri)
+        else:
+            # pause: two vertical bars
+            bw, bh, gap = 4, 12, 4
+            lx = cx - gap / 2 - bw
+            rx = cx + gap / 2
+            by = cy - bh / 2
+            p.drawRoundedRect(QRectF(lx, by, bw, bh), 2, 2)
+            p.drawRoundedRect(QRectF(rx, by, bw, bh), 2, 2)
 
 
 class MpvPlaybackSurface(QFrame):
@@ -714,6 +787,8 @@ class PlaybackPage(QWidget):
         self.selected_camera_ids: list[int] = []
         self.available_days: list[str] = []
         self.selected_date = ""
+        self._calendar_year = QDate.currentDate().year()
+        self._calendar_month = QDate.currentDate().month()
         self.segments_by_camera: dict[int, list[tuple[int, int]]] = {}
         self.current_time = 0
         self.visible_start = 0
@@ -722,9 +797,11 @@ class PlaybackPage(QWidget):
         self.stream_seek_offset = 0
         self._last_polled_time: Optional[int] = None
         self._stalled_poll_count = 0
+        self._player_offsets: dict[int, int] = {}
         self.playback_speed = 1.0
         self._camera_item_guard = False
         self.camera_checkboxes: dict[int, PrimeCheckBox] = {}
+        self.camera_color_dots: dict[int, QLabel] = {}
         self._day_request_token = 0
         self._range_request_token = 0
 
@@ -755,7 +832,7 @@ class PlaybackPage(QWidget):
         sidebar_layout = QVBoxLayout(sidebar)
         sidebar_layout.setContentsMargins(14, 14, 14, 14)
         sidebar_layout.setSpacing(12)
-        sidebar.setFixedWidth(320)
+        sidebar.setFixedWidth(380)
         root.addWidget(sidebar, 0)
 
         sidebar_title = QLabel("Camera Playback")
@@ -783,44 +860,19 @@ class PlaybackPage(QWidget):
         self.camera_list.setSpacing(4)
         sidebar_layout.addWidget(self.camera_list, 1)
 
-        month_row = QHBoxLayout()
-        month_row.setSpacing(8)
-        sidebar_layout.addLayout(month_row)
+        date_label = QLabel("Select Date")
+        date_label.setObjectName("playbackSectionLabel")
+        sidebar_layout.addWidget(date_label)
 
-        month_label = QLabel("Month")
-        month_label.setObjectName("playbackSectionLabel")
-        month_row.addWidget(month_label)
-
-        self.month_edit = PlaybackMonthEdit()
-        self.month_edit.setObjectName("playbackMonthEdit")
-        self.month_edit.setDisplayFormat("yyyy-MM")
-        self.month_edit.setDate(QDate.currentDate())
-        self.month_edit.dateChanged.connect(self._on_month_changed)
-        self.month_calendar = QCalendarWidget()
-        self.month_calendar.setObjectName("playbackMonthCalendar")
-        self.month_calendar.setVerticalHeaderFormat(QCalendarWidget.VerticalHeaderFormat.NoVerticalHeader)
-        self.month_calendar.setGridVisible(False)
-        self.month_calendar.clicked.connect(self._on_month_calendar_selected)
-        self.month_popup = QFrame(None, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
-        self.month_popup.setObjectName("playbackMonthPopup")
-        month_popup_layout = QVBoxLayout(self.month_popup)
-        month_popup_layout.setContentsMargins(10, 10, 10, 10)
-        month_popup_layout.setSpacing(0)
-        month_popup_layout.addWidget(self.month_calendar)
-        self.month_edit.clicked.connect(self._toggle_month_popup)
-        self._apply_month_calendar_style()
-        month_row.addWidget(self.month_edit, 1)
-
-        self.days_status_label = QLabel("Available days will appear here.")
-        self.days_status_label.setObjectName("playbackSidebarMeta")
-        self.days_status_label.setWordWrap(True)
-        sidebar_layout.addWidget(self.days_status_label)
-
-        self.days_list = QListWidget()
-        self.days_list.setObjectName("playbackDaysList")
-        self.days_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.days_list.currentItemChanged.connect(self._on_day_selected)
-        sidebar_layout.addWidget(self.days_list, 1)
+        self.day_calendar = PrimeCalendar(
+            framed=True,
+            selected_date=QDate.currentDate(),
+            full_circle_dates=True,
+        )
+        self.day_calendar.setMinimumHeight(320)
+        self.day_calendar.calendar.currentPageChanged.connect(self._on_calendar_page_changed)
+        self.day_calendar.date_selected.connect(self._on_calendar_day_selected)
+        sidebar_layout.addWidget(self.day_calendar)
 
         content = QFrame()
         content.setObjectName("playbackContent")
@@ -875,9 +927,7 @@ class PlaybackPage(QWidget):
         timeline_top_center.setSpacing(0)
         timeline_top.addLayout(timeline_top_center, 0)
 
-        self.play_pause_btn = QPushButton("")
-        self.play_pause_btn.setObjectName("playbackTimelineIconButton")
-        self.play_pause_btn.setFixedSize(34, 34)
+        self.play_pause_btn = PlayPauseButton()
         self.play_pause_btn.clicked.connect(self._toggle_playback)
         timeline_top_center.addWidget(self.play_pause_btn, 0, Qt.AlignmentFlag.AlignCenter)
         self._update_play_pause_button(True)
@@ -938,94 +988,6 @@ class PlaybackPage(QWidget):
         self._rebuild_players_grid([])
         self._sync_window_widgets()
 
-    def _apply_month_calendar_style(self) -> None:
-        self.month_popup.setStyleSheet(
-            """
-            QFrame#playbackMonthPopup {
-                background: #1b1c1f;
-                border: 1px solid #101114;
-                border-radius: 10px;
-            }
-            """
-        )
-        self.month_calendar.setStyleSheet(
-            """
-            QCalendarWidget#playbackMonthCalendar {
-                background: transparent;
-                border: none;
-            }
-            QCalendarWidget#playbackMonthCalendar QWidget#qt_calendar_navigationbar {
-                background: transparent;
-                min-height: 36px;
-            }
-            QCalendarWidget#playbackMonthCalendar QToolButton {
-                color: #f5f5f5;
-                background: transparent;
-                border: none;
-                min-width: 28px;
-                min-height: 28px;
-                font-weight: 700;
-            }
-            QCalendarWidget#playbackMonthCalendar QToolButton:hover {
-                background: #2a2d31;
-                border-radius: 6px;
-            }
-            QCalendarWidget#playbackMonthCalendar QMenu {
-                background: #1b1c1f;
-                color: #f5f5f5;
-                border: 1px solid #101114;
-            }
-            QCalendarWidget#playbackMonthCalendar QSpinBox {
-                background: #2a2d31;
-                color: #f5f5f5;
-                border: 1px solid #2f3338;
-                border-radius: 8px;
-                min-height: 28px;
-                padding: 0 8px;
-            }
-            QCalendarWidget#playbackMonthCalendar QAbstractItemView:enabled {
-                background: #1b1c1f;
-                color: #f5f5f5;
-                selection-background-color: #e7e7e7;
-                selection-color: #111111;
-                outline: 0;
-                border: none;
-            }
-            """
-        )
-
-    def _month_popup_position(self) -> QPoint:
-        popup_size = self.month_popup.sizeHint()
-        popup_width = max(self.month_edit.width(), popup_size.width())
-        popup_height = popup_size.height()
-        top_left = self.month_edit.mapToGlobal(QPoint(0, self.month_edit.height() + 6))
-        screen = QApplication.screenAt(top_left) or QApplication.primaryScreen()
-        if screen is None:
-            self.month_popup.resize(popup_width, popup_height)
-            return top_left
-
-        available = screen.availableGeometry()
-        x = max(available.left(), min(top_left.x(), available.right() - popup_width + 1))
-        y = top_left.y()
-        if y + popup_height - 1 > available.bottom():
-            above = self.month_edit.mapToGlobal(QPoint(0, -popup_height - 6))
-            y = max(available.top(), above.y())
-        self.month_popup.resize(popup_width, popup_height)
-        return QPoint(x, y)
-
-    def _toggle_month_popup(self) -> None:
-        if self.month_popup.isVisible():
-            self.month_popup.hide()
-            return
-        self.month_calendar.setSelectedDate(self.month_edit.date())
-        self.month_popup.move(self._month_popup_position())
-        self.month_popup.show()
-        self.month_popup.raise_()
-        self.month_calendar.setFocus()
-
-    def _on_month_calendar_selected(self, date: QDate) -> None:
-        self.month_popup.hide()
-        self.month_edit.setDate(QDate(date.year(), date.month(), 1))
 
     def _apply_styles(self) -> None:
         self.setStyleSheet(
@@ -1155,13 +1117,6 @@ class PlaybackPage(QWidget):
             QToolButton:hover {
                 background: #2a2a2a;
             }
-            QPushButton#playbackTimelineIconButton {
-                min-width: 34px;
-                max-width: 34px;
-                min-height: 34px;
-                max-height: 34px;
-                padding: 0;
-            }
             """
         )
 
@@ -1200,11 +1155,13 @@ class PlaybackPage(QWidget):
         with QSignalBlocker(self.camera_list):
             self.camera_list.clear()
             self.camera_checkboxes = {}
+            self.camera_color_dots = {}
             for camera in self.cameras:
                 camera_id = int(camera.id)
                 item = QListWidgetItem()
                 item.setFlags(Qt.ItemFlag.ItemIsEnabled)
                 item.setData(Qt.ItemDataRole.UserRole, int(camera.id))
+
                 checkbox = PrimeCheckBox(f"{camera.name}  •  {camera.camera_ip or 'No IP'}")
                 checkbox.toggled.connect(
                     lambda checked, current_camera_id=camera_id: self._on_camera_checkbox_toggled(
@@ -1214,10 +1171,24 @@ class PlaybackPage(QWidget):
                 )
                 with QSignalBlocker(checkbox):
                     checkbox.setChecked(camera_id in self.selected_camera_ids)
+
+                dot = QLabel()
+                dot.setFixedSize(10, 10)
+                dot.setStyleSheet("QLabel { background: transparent; border-radius: 5px; }")
+
+                row = QWidget()
+                row.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+                row_layout = QHBoxLayout(row)
+                row_layout.setContentsMargins(4, 0, 4, 0)
+                row_layout.setSpacing(6)
+                row_layout.addWidget(dot, 0, Qt.AlignmentFlag.AlignVCenter)
+                row_layout.addWidget(checkbox, 1)
+
                 item.setSizeHint(checkbox.sizeHint())
                 self.camera_list.addItem(item)
-                self.camera_list.setItemWidget(item, checkbox)
+                self.camera_list.setItemWidget(item, row)
                 self.camera_checkboxes[camera_id] = checkbox
+                self.camera_color_dots[camera_id] = dot
         self._filter_camera_list(self.search_edit.text())
         self._sync_camera_selection_ui()
 
@@ -1265,21 +1236,44 @@ class PlaybackPage(QWidget):
     def _sync_camera_selection_ui(self) -> None:
         self.selection_label.setText(f"Selected: {len(self.selected_camera_ids)} / 4")
         self._rebuild_players_grid(self.selected_camera_ids)
+        for camera_id, dot in self.camera_color_dots.items():
+            if camera_id in self.selected_camera_ids:
+                idx = self.selected_camera_ids.index(camera_id)
+                color = PLAYER_COLORS[idx % len(PLAYER_COLORS)]
+                dot.setStyleSheet(f"QLabel {{ background-color: {color}; border-radius: 5px; }}")
+            else:
+                dot.setStyleSheet("QLabel { background-color: transparent; border-radius: 5px; }")
 
-    def _on_month_changed(self, value: QDate) -> None:
-        normalized = QDate(value.year(), value.month(), 1)
-        if value != normalized:
-            with QSignalBlocker(self.month_edit):
-                self.month_edit.setDate(normalized)
+    def _on_calendar_page_changed(self, year: int, month: int) -> None:
+        self._calendar_year = year
+        self._calendar_month = month
         self._request_available_days()
 
+    def _on_calendar_day_selected(self, date: QDate) -> None:
+        day_text = date.toString("yyyy-MM-dd")
+        if not day_text or day_text == self.selected_date:
+            return
+        self.selected_date = day_text
+        self._request_available_ranges()
+
+    def _update_calendar_disabled_dates(self, available_days: List[str]) -> None:
+        year = self._calendar_year
+        month = self._calendar_month
+        available_set = set(available_days)
+        days_in_month = QDate(year, month, 1).daysInMonth()
+        disabled: List[QDate] = []
+        for day in range(1, days_in_month + 1):
+            d = QDate(year, month, day)
+            if d.toString("yyyy-MM-dd") not in available_set:
+                disabled.append(d)
+        self.day_calendar.set_disabled_dates(disabled)
+
     def _request_available_days(self) -> None:
-        month_text = self.month_edit.date().toString("yyyy-MM")
+        month_text = f"{self._calendar_year:04d}-{self._calendar_month:02d}"
         if not self.selected_camera_ids:
             self.available_days = []
             self.selected_date = ""
-            with QSignalBlocker(self.days_list):
-                self.days_list.clear()
+            self._update_calendar_disabled_dates([])
             return
 
         self._day_request_token += 1
@@ -1289,17 +1283,14 @@ class PlaybackPage(QWidget):
         def job() -> object:
             service = PlaybackService()
             combined: set[str] = set()
-            by_camera: dict[int, list[str]] = {}
             for camera_id in selected_ids:
                 days = service.available_days(camera_id, month_text)
-                by_camera[int(camera_id)] = days
                 combined.update(days)
             return {
                 "token": token,
                 "month": month_text,
                 "selected_ids": selected_ids,
                 "days": sorted(combined, reverse=True),
-                "by_camera": by_camera,
             }
 
         task = _Task(job)
@@ -1314,7 +1305,7 @@ class PlaybackPage(QWidget):
             return
 
         month_text = str(data.get("month") or "")
-        if month_text != self.month_edit.date().toString("yyyy-MM"):
+        if month_text != f"{self._calendar_year:04d}-{self._calendar_month:02d}":
             return
 
         selected_ids = list(data.get("selected_ids") or [])
@@ -1323,57 +1314,19 @@ class PlaybackPage(QWidget):
 
         days = [str(item) for item in (data.get("days") or [])]
         self.available_days = days
-        self._populate_days_list(days)
+        self._update_calendar_disabled_dates(days)
 
-        if days:
-            self.days_status_label.setText(f"{len(days)} recorded day(s) found for {month_text}.")
-        else:
-            self.days_status_label.setText("No recorded days found for this month.")
-            if self.selected_date.startswith(month_text):
-                self.selected_date = ""
-                self._clear_playback_state("No recordings in the selected month.")
+        if self.selected_date and self.selected_date not in days:
+            self.selected_date = ""
+            self._clear_playback_state("No recordings in the selected period.")
 
     def _on_days_error(self, token: int, text: str) -> None:
         if token != self._day_request_token:
             return
         self.available_days = []
-        self.days_list.clear()
-        self.days_status_label.setText("Unable to load available days.")
+        self._update_calendar_disabled_dates([])
         self._toast_error("Playback", text or "Failed to load available days.")
 
-    def _populate_days_list(self, days: List[str]) -> None:
-        if self.selected_date and self.selected_date not in days:
-            self.selected_date = ""
-
-        with QSignalBlocker(self.days_list):
-            self.days_list.clear()
-            current_item_to_select: Optional[QListWidgetItem] = None
-            for day in days:
-                item = QListWidgetItem(_format_day_label(day))
-                item.setData(Qt.ItemDataRole.UserRole, day)
-                self.days_list.addItem(item)
-                if day == self.selected_date:
-                    current_item_to_select = item
-
-            if current_item_to_select is not None:
-                self.days_list.setCurrentItem(current_item_to_select)
-            elif days and not self.selected_date:
-                self.days_list.setCurrentRow(0)
-
-        if not self.selected_date and self.days_list.currentItem() is not None:
-            selected = self.days_list.currentItem().data(Qt.ItemDataRole.UserRole)
-            self.selected_date = str(selected or "")
-            self._request_available_ranges()
-
-    def _on_day_selected(self, current: Optional[QListWidgetItem], previous: Optional[QListWidgetItem]) -> None:
-        del previous
-        if current is None:
-            return
-        day_text = str(current.data(Qt.ItemDataRole.UserRole) or "")
-        if not day_text or day_text == self.selected_date:
-            return
-        self.selected_date = day_text
-        self._request_available_ranges()
 
     def _request_available_ranges(self, seek_time: Optional[int] = None) -> None:
         if not self.selected_camera_ids or not self.selected_date:
@@ -1498,6 +1451,7 @@ class PlaybackPage(QWidget):
 
         self._last_polled_time = None
         self._stalled_poll_count = 0
+        self._player_offsets = {}
         loaded_any = False
         active_ids = list(self.selected_camera_ids[:4])
         self._rebuild_players_grid(active_ids)
@@ -1525,6 +1479,7 @@ class PlaybackPage(QWidget):
             url = self.playback_service.build_playlist_url(camera_id, self.selected_date, resolved_seek_time)
             player.load_url(url, title)
             player.set_speed(self.playback_speed)
+            self._player_offsets[index] = resolved_seek_time
             loaded_any = True
             
         self._update_play_pause_button(not loaded_any)
@@ -1584,16 +1539,18 @@ class PlaybackPage(QWidget):
         self._load_streams(self.current_time)
 
     def _sync_from_players(self) -> None:
-        visible_players = [player for player in self.players if player.isVisible()]
-        if not visible_players:
+        if not any(player.isVisible() for player in self.players):
             self.player_poll_timer.stop()
             return
 
         master: Optional[MpvPlaybackSurface] = None
+        master_idx: Optional[int] = None
         master_time_pos: Optional[float] = None
         paused_state: Optional[bool] = None
 
-        for player in visible_players:
+        for idx, player in enumerate(self.players):
+            if not player.isVisible():
+                continue
             if paused_state is None:
                 paused_state = player.is_paused()
             time_pos = player.time_pos()
@@ -1602,6 +1559,7 @@ class PlaybackPage(QWidget):
             if player.eof_reached() is True:
                 continue
             master = player
+            master_idx = idx
             master_time_pos = time_pos
             break
 
@@ -1614,10 +1572,29 @@ class PlaybackPage(QWidget):
 
         time_pos = master_time_pos
         if time_pos is not None:
-            self.current_time = max(0, min(86399, int(self.stream_seek_offset + round(time_pos))))
+            master_offset = self._player_offsets.get(master_idx, self.stream_seek_offset)
+            self.current_time = max(0, min(86399, int(master_offset + round(time_pos))))
             self._sync_time_widgets()
             if self.window_key != "24h":
                 self._set_window_mode(self.window_key, center_time=self.current_time, update_button=False)
+
+            # Wake up any idle player whose camera now has a segment at current_time
+            active_ids = list(self.selected_camera_ids[:4])
+            for idx, player in enumerate(self.players):
+                if idx >= len(active_ids) or not player.isVisible():
+                    continue
+                if player.time_pos() is not None:
+                    continue  # already playing
+                camera_id = active_ids[idx]
+                if not _segment_contains(self.segments_by_camera.get(camera_id, []), self.current_time):
+                    continue
+                camera = self.cameras_by_id.get(camera_id)
+                title = camera.name if camera else f"Camera {camera_id}"
+                url = self.playback_service.build_playlist_url(camera_id, self.selected_date, self.current_time)
+                player.load_url(url, title)
+                player.set_speed(self.playback_speed)
+                self._player_offsets[idx] = self.current_time
+
             if not any(_segment_contains(segments, self.current_time) for segments in self.segments_by_camera.values()):
                 if self._advance_to_next_segment(self.current_time + 1):
                     return
@@ -1762,15 +1739,8 @@ class PlaybackPage(QWidget):
         super().paintEvent(event)
 
     def _update_play_pause_button(self, paused: bool) -> None:
-        icon_type = (
-            QStyle.StandardPixmap.SP_MediaPlay
-            if paused
-            else QStyle.StandardPixmap.SP_MediaPause
-        )
-        tooltip = "Play" if paused else "Pause"
-        self.play_pause_btn.setIcon(self.style().standardIcon(icon_type))
-        self.play_pause_btn.setIconSize(QSize(18, 18))
-        self.play_pause_btn.setToolTip(tooltip)
+        self.play_pause_btn.set_paused(paused)
+        self.play_pause_btn.setToolTip("Play" if paused else "Pause")
 
     def _on_player_error(self, text: str) -> None:
         self._toast_error("Playback", text)

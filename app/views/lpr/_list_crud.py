@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QMessageBox,
     QPushButton,
     QTextEdit,
     QToolButton,
@@ -28,8 +27,10 @@ from app.services.home.lpr.list_service import LprRegistryService
 from app.store.auth import AuthStore
 from app.store.home.lpr.list_store import LprRegistryStore
 from app.store.home.user.department_store import DepartmentStore as CameraDepartmentStore
+from app.ui.confirm_dialog import PrimeConfirmDialog
 from app.ui.multiselect import PrimeMultiSelect
 from app.ui.table import PrimeDataTable, PrimeTableColumn
+from app.ui.toast import show_toast_message
 from app.utils.digits import normalize_ascii_digits
 from app.views.watchlist_shared import WATCHLIST_SIDEBAR_STYLES, WatchlistSidebar
 
@@ -265,7 +266,7 @@ class LprRegistryDialog(QDialog):
 
     def _submit(self) -> None:
         if not self.plate_no_edit.text().strip():
-            QMessageBox.warning(self, "Missing", "Plate number is required.")
+            show_toast_message(self, "warn", "Missing", "Plate number is required.")
             return
         self.submitted.emit(self._payload(), self.is_edit_mode)
 
@@ -494,26 +495,31 @@ class LprRegistryPage(QWidget):
     def _on_search_changed(self, text: str) -> None:
         self.table.set_filter_text(text)
 
-    def _action_button(self, svg_icon: str, bg: str, border: str) -> QToolButton:
+    def _action_button(self, svg_icon: str, bg: str, border: str, size: int = 34) -> QToolButton:
         btn = QToolButton()
         btn.setCursor(Qt.PointingHandCursor)
-        btn.setFixedSize(32, 32)
+        btn.setFixedSize(size, size)
         btn.setStyleSheet(
             f"""
             QToolButton {{
                 background: {bg};
                 border: 1px solid {border};
-                border-radius: 16px;
+                border-radius: {size // 2}px;
             }}
             QToolButton:hover {{
                 border-color: #f8fafc;
+            }}
+            QToolButton:disabled {{
+                background: #2b2d33;
+                border-color: #3b3f47;
             }}
             """
         )
         icon_file = _icon_path(svg_icon)
         if os.path.isfile(icon_file):
+            icon_px = max(12, size - 16)
             btn.setIcon(QIcon(icon_file))
-            btn.setIconSize(QSize(18, 18))
+            btn.setIconSize(QSize(icon_px, icon_px))
         return btn
 
     def _action_widget(self, row: Dict[str, Any]) -> QWidget:
@@ -527,12 +533,12 @@ class LprRegistryPage(QWidget):
         if not isinstance(entry, LprListEntry):
             return box
 
-        edit_btn = self._action_button("edit.svg", "#35507f", "#4d76bb")
+        edit_btn = self._action_button("edit.svg", "#3578f6", "#4e8cff")
         edit_btn.setToolTip("Edit Entry")
         edit_btn.clicked.connect(lambda: self.open_edit_dialog(entry))
         layout.addWidget(edit_btn)
 
-        delete_btn = self._action_button("trash.svg", "#8b2f3f", "#bb4d62")
+        delete_btn = self._action_button("trash.svg", "#ef4444", "#ff6464")
         delete_btn.setToolTip("Delete Entry")
         delete_btn.clicked.connect(lambda: self.handle_delete(entry))
         layout.addWidget(delete_btn)
@@ -581,19 +587,21 @@ class LprRegistryPage(QWidget):
             dialog.accept()
 
     def handle_delete(self, entry: LprListEntry) -> None:
-        result = QMessageBox.question(
-            self,
-            "Delete Entry",
-            f"Are you sure you want to delete '{entry.plate_no}'?",
+        confirmed = PrimeConfirmDialog.ask(
+            parent=self,
+            title="Delete Entry",
+            message=f"Are you sure you want to delete '{entry.plate_no}'?",
+            ok_text="Delete",
+            cancel_text="Cancel",
         )
-        if result == QMessageBox.Yes:
+        if confirmed:
             self.registry_store.delete_entry(entry.id)
 
     def _show_error(self, text: str) -> None:
-        QMessageBox.critical(self, self.page_title, text)
+        show_toast_message(self, "error", self.page_title, text)
 
     def _show_info(self, text: str) -> None:
-        QMessageBox.information(self, self.page_title, text)
+        show_toast_message(self, "info", self.page_title, text)
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -601,5 +609,3 @@ class LprRegistryPage(QWidget):
         path.addRect(QRectF(self.rect()))
         p.fillPath(path, QColor(Constants.DARK_BG))   # dark bg — cards float above it
         super().paintEvent(event)
-
-

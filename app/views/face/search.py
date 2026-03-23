@@ -7,14 +7,13 @@ import urllib.parse
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-from PySide6.QtCore import QThread, Qt, Signal,QRectF
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QThread, Qt, Signal, QRectF
 from PySide6.QtGui import QCursor, QIcon,QColor,QPainter,QPainterPath
 from app.constants._init_ import Constants
 from PySide6.QtNetwork import QNetworkAccessManager
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
-    QCheckBox,
     QComboBox,
     QDialog,
     QDoubleSpinBox,
@@ -48,7 +47,12 @@ from app.services.home.face_whitelist_service import FaceWhitelistService
 from app.store.auth.auth_store import AuthStore
 from app.store.home.face.face_search_store import FaceSearchStore
 from app.store.home.user.department_store import DepartmentStore as CameraDepartmentStore
+from app.ui.button import PrimeButton
+from app.ui.checkbox import PrimeCheckBox
+from app.ui.dialog import PrimeDialog
+from app.ui.input import PrimeInput
 from app.ui.multiselect import PrimeMultiSelect
+from app.ui.select import PrimeSelect
 from app.ui.table import PrimeDataTable, PrimeTableColumn
 from app.ui.toast import PrimeToastHost
 from app.utils.env import resolve_http_base_url
@@ -222,7 +226,8 @@ class FaceWatchlistDialog(QDialog):
         form.setContentsMargins(0, 0, 0, 0)
         form.setSpacing(12)
 
-        self.name_edit = QLineEdit(f"Face_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+        self.name_edit = PrimeInput(placeholder_text="Face name")
+        self.name_edit.setText(f"Face_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
         form.addWidget(self._field_block("Name", self.name_edit))
 
         colors_grid = QGridLayout()
@@ -231,32 +236,29 @@ class FaceWatchlistDialog(QDialog):
         colors_grid.setVerticalSpacing(12)
         form.addLayout(colors_grid)
 
-        self.face_color_edit = QLineEdit(record.top_color_text if record.top_color_text != "-" else "")
+        self.face_color_edit = PrimeInput(placeholder_text="Face color")
+        self.face_color_edit.setText(record.top_color_text if record.top_color_text != "-" else "")
         colors_grid.addWidget(self._field_block("Face Color", self.face_color_edit), 0, 0)
 
-        self.hair_color_edit = QLineEdit(record.bottom_color_text if record.bottom_color_text != "-" else "")
+        self.hair_color_edit = PrimeInput(placeholder_text="Hair color")
+        self.hair_color_edit.setText(record.bottom_color_text if record.bottom_color_text != "-" else "")
         colors_grid.addWidget(self._field_block("Hair Color", self.hair_color_edit), 0, 1)
 
-        self.age_spin = QSpinBox()
-        self.age_spin.setRange(0, 150)
-        self.age_spin.setSpecialValueText("Unset")
-        self.age_spin.setValue(int(record.age or 0))
+        self.age_spin = PrimeInput(type="number", minimum=0, maximum=150, decimals=0, value=int(record.age or 0))
         colors_grid.addWidget(self._field_block("Age", self.age_spin), 1, 0)
 
-        self.gender_combo = QComboBox()
-        self.gender_combo.addItem("Unset", "")
-        self.gender_combo.addItem("Male", "Male")
-        self.gender_combo.addItem("Female", "Female")
-        gender_index = self.gender_combo.findData(record.gender or "")
-        self.gender_combo.setCurrentIndex(gender_index if gender_index >= 0 else 0)
+        self.gender_combo = PrimeSelect(
+            options=[
+                {"label": "Unset", "value": None},
+                {"label": "Male", "value": "Male"},
+                {"label": "Female", "value": "Female"},
+            ],
+            placeholder="Unset",
+        )
+        self.gender_combo.set_value(record.gender or None)
         colors_grid.addWidget(self._field_block("Gender", self.gender_combo), 1, 1)
 
-        self.match_spin = QDoubleSpinBox()
-        self.match_spin.setRange(0.0, 100.0)
-        self.match_spin.setDecimals(2)
-        self.match_spin.setSuffix(" %")
-        self.match_spin.setSingleStep(1.0)
-        self.match_spin.setValue(70.0)
+        self.match_spin = PrimeInput(type="number", minimum=0, maximum=100, decimals=2, value=70.0)
         form.addWidget(self._field_block("Match Threshold", self.match_spin))
 
         self.camera_list = QListWidget()
@@ -389,7 +391,8 @@ class FaceWatchlistDialog(QDialog):
         return values
 
     def payload(self) -> Dict[str, Any]:
-        age_value = self.age_spin.value()
+        age_value = int(round(self.age_spin.value()))
+        match_value = float(self.match_spin.value())
         return {
             "name": self.name_edit.text().strip(),
             "embedding": self._embedding_result.embedding,
@@ -398,9 +401,9 @@ class FaceWatchlistDialog(QDialog):
             "hair_color": self.hair_color_edit.text().strip(),
             "face_color": self.face_color_edit.text().strip(),
             "age": age_value if age_value > 0 else None,
-            "gender": str(self.gender_combo.currentData() or "").strip(),
-            "match": float(self.match_spin.value()),
-            "similarity": float(self.match_spin.value()),
+            "gender": str(self.gender_combo.value() or "").strip(),
+            "match": match_value,
+            "similarity": match_value,
             "camera_ids": self._selected_camera_ids(),
             "note": self.note_edit.toPlainText().strip(),
         }
@@ -550,24 +553,85 @@ class FaceResultCard(QFrame):
         super().mousePressEvent(event)
 
 
-class FaceDetailDialog(QDialog):
+class FaceDetailDialog(PrimeDialog):
     search_requested = Signal(object)
     blacklist_requested = Signal(object)
     whitelist_requested = Signal(object)
+
+    _CONTENT_STYLE = """
+        QFrame#detailImageCard, QFrame#detailHighlightCard, QFrame#detailInfoCard {
+            background: #1f242d;
+            border: 1px solid #2f3642;
+            border-radius: 16px;
+        }
+        QFrame#detailMetricCard {
+            background: #141922;
+            border: 1px solid #2a3140;
+            border-radius: 12px;
+        }
+        QLabel#detailCardTitle {
+            color: #f8fafc;
+            font-size: 13px;
+            font-weight: 700;
+        }
+        QLabel#detailMuted {
+            color: #94a3b8;
+            font-size: 12px;
+        }
+        QLabel#detailHeroValue {
+            color: #34d399;
+            font-size: 28px;
+            font-weight: 800;
+        }
+        QLabel#detailMetricValue {
+            color: #f8fafc;
+            font-size: 14px;
+            font-weight: 700;
+        }
+    """
 
     def __init__(
         self,
         record: FaceSearchResult,
         net: QNetworkAccessManager,
         auth_token: str = "",
+        allow_actions: bool = True,
         parent: Optional[QWidget] = None,
     ) -> None:
-        super().__init__(parent)
+        super().__init__(
+            title="Face Details",
+            parent=parent,
+            width=1120,
+            height=780,
+            ok_text="Search Similar",
+            cancel_text="Close",
+            draggable=False,
+        )
         self.record = record
-        self.setWindowTitle("Face Details")
-        self.resize(1120, 780)
+        self._net = net
+        self._auth_token = str(auth_token or "").strip()
 
-        root = QVBoxLayout(self)
+        if allow_actions:
+            footer = self.footer_widget.layout()
+            blacklist_btn = PrimeButton("Blacklist", variant="danger", mode="filled", size="sm", width=100)
+            whitelist_btn = PrimeButton("Whitelist", variant="success", mode="filled", size="sm", width=100)
+            blacklist_btn.clicked.connect(lambda: self.blacklist_requested.emit(self.record))
+            whitelist_btn.clicked.connect(lambda: self.whitelist_requested.emit(self.record))
+            footer.insertWidget(0, blacklist_btn)
+            footer.insertWidget(1, whitelist_btn)
+            self.ok_button.clicked.disconnect()
+            self.ok_button.clicked.connect(lambda: self.search_requested.emit(self.record))
+        else:
+            self.ok_button.setVisible(False)
+
+        self.set_content(self._build_content(record), fill_height=True)
+
+    def _build_content(self, record: FaceSearchResult) -> QWidget:
+        content = QWidget()
+        content.setFixedWidth(1068)
+        content.setStyleSheet(self._CONTENT_STYLE)
+
+        root = QVBoxLayout(content)
         root.setContentsMargins(18, 18, 18, 18)
         root.setSpacing(14)
 
@@ -576,10 +640,10 @@ class FaceDetailDialog(QDialog):
         grid.setVerticalSpacing(16)
         root.addLayout(grid, 1)
 
-        full_card = self._image_card("Full Camera Frame", net, _face_full_url(record), "No Frame", auth_token, 360)
+        full_card = self._image_card("Full Camera Frame", _face_full_url(record), "No Frame", 360)
         grid.addWidget(full_card, 0, 0, 2, 2)
 
-        crop_card = self._image_card("Face Crop", net, _face_crop_url(record), "No Face", auth_token, 220)
+        crop_card = self._image_card("Face Crop", _face_crop_url(record), "No Face", 220)
         grid.addWidget(crop_card, 0, 2, 1, 1)
 
         gender_card = QFrame()
@@ -629,115 +693,13 @@ class FaceDetailDialog(QDialog):
             info_layout.addWidget(card, index // 4, index % 4)
         root.addWidget(info_card)
 
-        buttons = QHBoxLayout()
-        buttons.setSpacing(10)
-        root.addLayout(buttons)
-
-        search_btn = QPushButton("Search Similar")
-        search_btn.setObjectName("detailPrimaryButton")
-        search_btn.clicked.connect(lambda: self.search_requested.emit(self.record))
-        buttons.addWidget(search_btn, 1)
-
-        blacklist_btn = QPushButton("Blacklist")
-        blacklist_btn.setObjectName("detailDangerButton")
-        blacklist_btn.clicked.connect(lambda: self.blacklist_requested.emit(self.record))
-        buttons.addWidget(blacklist_btn, 0)
-
-        whitelist_btn = QPushButton("Whitelist")
-        whitelist_btn.setObjectName("detailSuccessButton")
-        whitelist_btn.clicked.connect(lambda: self.whitelist_requested.emit(self.record))
-        buttons.addWidget(whitelist_btn, 0)
-
-        close_btn = QPushButton("Close")
-        close_btn.setObjectName("detailGhostButton")
-        close_btn.clicked.connect(self.accept)
-        buttons.addWidget(close_btn, 0)
-
-        self.setStyleSheet(
-            """
-            QDialog {
-                background: #171b22;
-                color: #f8fafc;
-            }
-            QFrame#detailImageCard, QFrame#detailHighlightCard, QFrame#detailInfoCard {
-                background: #1f242d;
-                border: 1px solid #2f3642;
-                border-radius: 16px;
-            }
-            QFrame#detailMetricCard {
-                background: #141922;
-                border: 1px solid #2a3140;
-                border-radius: 12px;
-            }
-            QLabel#detailCardTitle {
-                color: #f8fafc;
-                font-size: 13px;
-                font-weight: 700;
-            }
-            QLabel#detailMuted {
-                color: #94a3b8;
-                font-size: 12px;
-            }
-            QLabel#detailHeroValue {
-                color: #34d399;
-                font-size: 28px;
-                font-weight: 800;
-            }
-            QLabel#detailMetricValue {
-                color: #f8fafc;
-                font-size: 14px;
-                font-weight: 700;
-            }
-            QPushButton#detailPrimaryButton, QPushButton#detailGhostButton,
-            QPushButton#detailDangerButton, QPushButton#detailSuccessButton {
-                border-radius: 12px;
-                min-height: 42px;
-                font-size: 13px;
-                font-weight: 700;
-                padding: 0 18px;
-            }
-            QPushButton#detailPrimaryButton {
-                background: #2563eb;
-                border: none;
-                color: white;
-            }
-            QPushButton#detailPrimaryButton:hover {
-                background: #1d4ed8;
-            }
-            QPushButton#detailDangerButton {
-                background: #991b1b;
-                border: 1px solid #ef4444;
-                color: #fee2e2;
-            }
-            QPushButton#detailDangerButton:hover {
-                background: #b91c1c;
-            }
-            QPushButton#detailSuccessButton {
-                background: #14532d;
-                border: 1px solid #22c55e;
-                color: #dcfce7;
-            }
-            QPushButton#detailSuccessButton:hover {
-                background: #166534;
-            }
-            QPushButton#detailGhostButton {
-                background: #27303d;
-                border: 1px solid #3a4555;
-                color: #e2e8f0;
-            }
-            QPushButton#detailGhostButton:hover {
-                background: #313b4a;
-            }
-            """
-        )
+        return content
 
     def _image_card(
         self,
         title: str,
-        net: QNetworkAccessManager,
         image_url: str,
         fallback_text: str,
-        auth_token: str,
         minimum_height: int,
     ) -> QWidget:
         frame = QFrame()
@@ -750,7 +712,7 @@ class FaceDetailDialog(QDialog):
         title_label.setObjectName("detailCardTitle")
         layout.addWidget(title_label)
 
-        image = RemoteImageLabel(net, fallback_text=fallback_text, auth_token=auth_token)
+        image = RemoteImageLabel(self._net, fallback_text=fallback_text, auth_token=self._auth_token)
         image.setMinimumHeight(minimum_height)
         image.setStyleSheet(
             "background:#090d12;border:1px solid #1f2937;border-radius:14px;color:#64748b;"
@@ -778,7 +740,7 @@ class FaceSearchPage(QWidget):
         self.net = QNetworkAccessManager(self)
 
         self.filter_panel_open = False
-        self.filters_window_visible = True
+        self.filters_window_visible = False
         self.grid_view = True
         self.grid_columns = 3
         self.rows_per_page = 20
@@ -787,6 +749,7 @@ class FaceSearchPage(QWidget):
         self.search_in_progress = False
         self._search_thread: Optional[FaceSearchWorker] = None
         self._filter_sections: list[FilterAccordionSection] = []
+        self._filters_slide_animation: Optional[QPropertyAnimation] = None
         self._reference_embedding: Any = ""
 
         self.auth_store.changed.connect(self._on_auth_changed)
@@ -807,15 +770,19 @@ class FaceSearchPage(QWidget):
     def _build_ui(self) -> None:
         root = QHBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8)
-        root.setSpacing(0)
+        root.setSpacing(12)
+        self._root_layout = root
 
         self.date_from_input = ClearableDateTimeField("Start Time")
         self.date_to_input = ClearableDateTimeField("End Time")
+        self._allow_horizontal_shrink(self.date_from_input)
+        self._allow_horizontal_shrink(self.date_to_input)
 
         self.reference_section = FilterAccordionSection(
             "Reference Face",
             "Upload a face image to get an embedding and search similar records.",
-            expanded=False,
+            expanded=True,
+            collapsible=False,
         )
         self._filter_sections.append(self.reference_section)
         ref_layout = self.reference_section.body_layout
@@ -833,13 +800,11 @@ class FaceSearchPage(QWidget):
         ref_actions.setSpacing(8)
         ref_layout.addLayout(ref_actions)
 
-        self.upload_btn = QPushButton("Upload Face")
-        self.upload_btn.setObjectName("secondarySidebarButton")
+        self.upload_btn = PrimeButton("Upload Face", variant="secondary", mode="outline", size="sm", width=118)
         self.upload_btn.clicked.connect(self._choose_reference_image)
         ref_actions.addWidget(self.upload_btn)
 
-        self.clear_reference_btn = QPushButton("Clear")
-        self.clear_reference_btn.setObjectName("secondarySidebarButton")
+        self.clear_reference_btn = PrimeButton("Clear", variant="secondary", mode="outline", size="sm", width=110)
         self.clear_reference_btn.clicked.connect(self._clear_reference_face)
         ref_actions.addWidget(self.clear_reference_btn)
 
@@ -853,7 +818,8 @@ class FaceSearchPage(QWidget):
         self.attributes_section = FilterAccordionSection(
             "Face Attributes",
             "Refine by gender, age range, colors, and match percentage.",
-            expanded=False,
+            expanded=True,
+            collapsible=False,
         )
         self._filter_sections.append(self.attributes_section)
         attr_layout = self.attributes_section.body_layout
@@ -864,54 +830,68 @@ class FaceSearchPage(QWidget):
         attr_grid.setVerticalSpacing(12)
         attr_layout.addLayout(attr_grid)
 
-        self.gender_combo = self._combo_box()
-        self.gender_combo.addItem("Any Gender", "")
-        self.gender_combo.addItem("Male", "Male")
-        self.gender_combo.addItem("Female", "Female")
+        self.gender_combo = PrimeSelect(
+            options=[
+                {"label": "Any Gender", "value": None},
+                {"label": "Male", "value": "Male"},
+                {"label": "Female", "value": "Female"},
+            ],
+            placeholder="Any Gender",
+        )
+        self._allow_horizontal_shrink(self.gender_combo)
         attr_grid.addWidget(self._field_block("Gender", self.gender_combo), 0, 0)
 
-        self.match_spin = QDoubleSpinBox()
-        self.match_spin.setRange(1.0, 100.0)
-        self.match_spin.setDecimals(0)
-        self.match_spin.setSingleStep(1.0)
-        self.match_spin.setSuffix("%")
-        self.match_spin.setValue(70.0)
+        self.match_spin = PrimeInput(type="number", minimum=1, maximum=100, decimals=0, value=70)
+        self._allow_horizontal_shrink(self.match_spin)
         attr_grid.addWidget(self._field_block("Match", self.match_spin), 0, 1)
 
-        self.age_from_spin = QSpinBox()
-        self.age_from_spin.setRange(0, 150)
-        self.age_from_spin.setValue(1)
+        self.age_from_spin = PrimeInput(type="number", minimum=0, maximum=150, decimals=0, value=1)
+        self._allow_horizontal_shrink(self.age_from_spin)
         attr_grid.addWidget(self._field_block("Age From", self.age_from_spin), 1, 0)
 
-        self.age_to_spin = QSpinBox()
-        self.age_to_spin.setRange(0, 150)
-        self.age_to_spin.setValue(100)
+        self.age_to_spin = PrimeInput(type="number", minimum=0, maximum=150, decimals=0, value=100)
+        self._allow_horizontal_shrink(self.age_to_spin)
         attr_grid.addWidget(self._field_block("Age To", self.age_to_spin), 1, 1)
 
         self.top_color_select = PrimeMultiSelect(COLOR_OPTIONS, placeholder="Select Top Colors")
+        self._allow_horizontal_shrink(self.top_color_select)
         attr_layout.addWidget(self._field_block("Top Color", self.top_color_select))
 
         self.bottom_color_select = PrimeMultiSelect(COLOR_OPTIONS, placeholder="Select Bottom Colors")
+        self._allow_horizontal_shrink(self.bottom_color_select)
         attr_layout.addWidget(self._field_block("Bottom Color", self.bottom_color_select))
 
         source_section = FilterAccordionSection(
             "Source And Status",
             "Limit the search to selected cameras or only blacklist or whitelist detections.",
-            expanded=False,
+            expanded=True,
+            collapsible=False,
         )
         self._filter_sections.append(source_section)
         source_layout = source_section.body_layout
 
         self.camera_select = PrimeMultiSelect([], placeholder="Select Cameras")
+        self._allow_horizontal_shrink(self.camera_select)
         source_layout.addWidget(self._field_block("Camera", self.camera_select))
 
-        checks = QHBoxLayout()
+        checks = QVBoxLayout()
         checks.setSpacing(12)
-        self.blacklist_check = QCheckBox("In Blacklist")
-        self.whitelist_check = QCheckBox("In Whitelist")
-        checks.addWidget(self.blacklist_check, 1)
-        checks.addWidget(self.whitelist_check, 1)
+        self.blacklist_check = PrimeCheckBox("In Blacklist")
+        self.whitelist_check = PrimeCheckBox("In Whitelist")
+        checks.addWidget(self.blacklist_check)
+        checks.addWidget(self.whitelist_check)
         source_layout.addLayout(checks)
+
+        self.filters_panel = QFrame()
+        self.filters_panel.setObjectName("filtersPanel")
+        self.filters_panel.setMinimumWidth(0)
+        self.filters_panel.setMaximumWidth(0 if not self.filters_window_visible else 16777215)
+        self.filters_panel.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        filters_layout = QVBoxLayout(self.filters_panel)
+        filters_layout.setContentsMargins(0, 0, 0, 0)
+        filters_layout.setSpacing(0)
+        self.filters_panel.setVisible(self.filters_window_visible)
+        root.addWidget(self.filters_panel, 0)
 
         main_panel = QFrame()
         main_panel.setObjectName("resultsPanel")
@@ -919,37 +899,40 @@ class FaceSearchPage(QWidget):
         main_layout.setContentsMargins(18, 16, 18, 18)
         main_layout.setSpacing(14)
         root.addWidget(main_panel, 1)
+        root.setStretch(0, 1)
+        root.setStretch(1, 4)
 
         self.hero_scroll = QScrollArea()
         self.hero_scroll.setObjectName("filtersScroll")
         self.hero_scroll.setWidgetResizable(True)
         self.hero_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.hero_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.hero_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.hero_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
-        self.hero_scroll.setMinimumHeight(0)
-        main_layout.addWidget(self.hero_scroll)
+        self.hero_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.hero_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        filters_layout.addWidget(self.hero_scroll, 1)
 
         hero_frame = QFrame()
         hero_frame.setObjectName("searchHero")
+        hero_frame.setMinimumWidth(0)
         self.hero_frame = hero_frame
         hero_layout = QVBoxLayout(hero_frame)
         hero_layout.setContentsMargins(18, 18, 18, 18)
         hero_layout.setSpacing(14)
         self.hero_scroll.setWidget(hero_frame)
 
-        hero_head = QHBoxLayout()
+        hero_head = QVBoxLayout()
         hero_head.setContentsMargins(0, 0, 0, 0)
-        hero_head.setSpacing(8)
+        hero_head.setSpacing(6)
         hero_layout.addLayout(hero_head)
 
         hero_text = QVBoxLayout()
         hero_text.setContentsMargins(0, 0, 0, 0)
         hero_text.setSpacing(4)
-        hero_head.addLayout(hero_text, 1)
+        hero_head.addLayout(hero_text)
 
-        hero_title = QLabel("Face Search Window")
+        hero_title = QLabel("Face Search")
         hero_title.setObjectName("heroTitle")
+        hero_title.setWordWrap(True)
         hero_text.addWidget(hero_title)
 
         hero_hint = QLabel(
@@ -961,12 +944,13 @@ class FaceSearchPage(QWidget):
 
         self.filter_state_chip = QLabel("Quick search")
         self.filter_state_chip.setObjectName("heroChip")
-        hero_head.addWidget(self.filter_state_chip, 0, Qt.AlignmentFlag.AlignTop)
+        hero_head.addWidget(self.filter_state_chip, 0, Qt.AlignmentFlag.AlignLeft)
 
         time_band = FilterAccordionSection(
             "Time Range",
             "These date pickers control which face records are searched.",
-            expanded=False,
+            expanded=True,
+            collapsible=False,
         )
         self._filter_sections.append(time_band)
         time_layout = QGridLayout()
@@ -981,8 +965,8 @@ class FaceSearchPage(QWidget):
         )
         time_layout.addWidget(
             self._hero_field_block("End Date & Time", self.date_to_input, "Search until this timestamp."),
-            0,
             1,
+            0,
         )
         hero_layout.addWidget(time_band)
         hero_layout.addWidget(self.reference_section)
@@ -992,30 +976,26 @@ class FaceSearchPage(QWidget):
         for section in self._filter_sections:
             section.toggled.connect(self._sync_filter_toggle_ui)
 
-        self.reset_btn = QPushButton("Reset Filters")
-        self.reset_btn.setObjectName("secondarySidebarButton")
-        self.reset_btn.setMinimumWidth(154)
+        self.reset_btn = PrimeButton("Reset Filters", variant="secondary", mode="outline", size="sm")
         self.reset_btn.clicked.connect(self.reset_filters)
 
-        self.filter_toggle_btn = QPushButton("Hide Filters")
-        self.filter_toggle_btn.setObjectName("filterToggleButton")
-        self.filter_toggle_btn.setMinimumWidth(154)
+        self.filter_toggle_btn = PrimeButton("All Filters Visible", variant="secondary", mode="outline", size="sm")
         self.filter_toggle_btn.clicked.connect(self.toggle_filter_panel)
+        self.filter_toggle_btn.hide()
 
-        self.search_btn = QPushButton("Search Records")
-        self.search_btn.setObjectName("primarySidebarButton")
-        self.search_btn.setMinimumWidth(170)
+        self.search_btn = PrimeButton("Search Records", variant="primary", mode="filled", size="sm")
         self.search_btn.clicked.connect(self.perform_search)
 
-        hero_actions = QHBoxLayout()
+        hero_actions = QVBoxLayout()
         hero_actions.setContentsMargins(0, 0, 0, 0)
-        hero_actions.setSpacing(10)
-        hero_actions.addWidget(self.filter_toggle_btn, 0)
-        hero_actions.addWidget(self.reset_btn, 0)
-        hero_actions.addWidget(self.search_btn, 0)
-        hero_actions.addStretch(1)
+        hero_actions.setSpacing(8)
+        self._allow_horizontal_shrink(self.reset_btn)
+        self._allow_horizontal_shrink(self.search_btn)
+        hero_actions.addWidget(self.reset_btn)
+        hero_actions.addWidget(self.search_btn)
         hero_layout.addLayout(hero_actions)
         self._sync_filter_toggle_ui()
+        self._sync_filters_window_ui()
         self._update_filters_scroll_height()
 
         toolbar_frame = QFrame()
@@ -1036,27 +1016,32 @@ class FaceSearchPage(QWidget):
         left_cluster.addWidget(self.page_summary)
         toolbar.addLayout(left_cluster, 1)
 
-        self.results_filter_btn = QPushButton("Hide Filters")
-        self.results_filter_btn.setObjectName("filterToggleButton")
+        self.results_filter_btn = PrimeButton(
+            "Hide Sidebar" if self.filters_window_visible else "Show Sidebar",
+            variant="secondary",
+            mode="outline",
+            size="sm",
+        )
         self.results_filter_btn.clicked.connect(self.toggle_filters_window)
         toolbar.addWidget(self.results_filter_btn)
 
-        self.grid_cols_combo = self._combo_box()
-        for count in GRID_OPTIONS:
-            self.grid_cols_combo.addItem(f"{count} Col", count)
-        self.grid_cols_combo.setCurrentText("3 Col")
-        self.grid_cols_combo.currentIndexChanged.connect(self._on_grid_columns_changed)
+        self.grid_cols_combo = PrimeSelect(
+            options=[{"label": f"{count} Col", "value": count} for count in GRID_OPTIONS],
+            placeholder="3 Col",
+        )
+        self.grid_cols_combo.set_value(3)
+        self.grid_cols_combo.value_changed.connect(self._on_grid_columns_changed)
         toolbar.addWidget(self.grid_cols_combo)
 
-        self.rows_combo = self._combo_box()
-        for count in ROWS_PER_PAGE_OPTIONS:
-            self.rows_combo.addItem(f"{count} Rows", count)
-        self.rows_combo.setCurrentText("20 Rows")
-        self.rows_combo.currentIndexChanged.connect(self._on_rows_changed)
+        self.rows_combo = PrimeSelect(
+            options=[{"label": f"{count} Rows", "value": count} for count in ROWS_PER_PAGE_OPTIONS],
+            placeholder="20 Rows",
+        )
+        self.rows_combo.set_value(20)
+        self.rows_combo.value_changed.connect(self._on_rows_changed)
         toolbar.addWidget(self.rows_combo)
 
-        self.export_btn = QPushButton("Export")
-        self.export_btn.setObjectName("toolbarButton")
+        self.export_btn = PrimeButton("Export", variant="primary", mode="filled", size="sm")
         self.export_btn.clicked.connect(self.export_csv)
         toolbar.addWidget(self.export_btn)
 
@@ -1091,6 +1076,7 @@ class FaceSearchPage(QWidget):
         self.grid_scroll.setWidgetResizable(True)
         self.grid_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.grid_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.grid_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         grid_page_layout.addWidget(self.grid_scroll, 1)
 
         self.grid_content = QWidget()
@@ -1107,13 +1093,11 @@ class FaceSearchPage(QWidget):
         pagination.addWidget(self.grid_meta)
         pagination.addStretch(1)
 
-        self.prev_btn = QPushButton("Prev")
-        self.prev_btn.setObjectName("pagerButton")
+        self.prev_btn = PrimeButton("← Prev", variant="secondary", mode="outline", size="sm")
         self.prev_btn.clicked.connect(self._go_prev_page)
         pagination.addWidget(self.prev_btn)
 
-        self.next_btn = QPushButton("Next")
-        self.next_btn.setObjectName("pagerButton")
+        self.next_btn = PrimeButton("Next →", variant="secondary", mode="outline", size="sm")
         self.next_btn.clicked.connect(self._go_next_page)
         pagination.addWidget(self.next_btn)
         grid_page_layout.addLayout(pagination)
@@ -1157,6 +1141,10 @@ class FaceSearchPage(QWidget):
                 color: #e2e8f0;
                 font-size: 13px;
             }
+            QFrame#filtersPanel {
+                background: transparent;
+                border: none;
+            }
             QFrame#resultsPanel {
                 background: #171b22;
                 border: 1px solid #2b3240;
@@ -1168,41 +1156,36 @@ class FaceSearchPage(QWidget):
                 border-radius: 16px;
             }
             QFrame#searchHero {
-                background: qlineargradient(
-                    x1: 0, y1: 0, x2: 1, y2: 1,
-                    stop: 0 #182740,
-                    stop: 0.55 #132238,
-                    stop: 1 #0f1726
-                );
-                border: 1px solid #35588c;
+                background: #171b22;
+                border: 1px solid #2b3240;
                 border-radius: 22px;
             }
             QFrame#filterAccordion {
-                background: rgba(7, 13, 24, 0.52);
-                border: 1px solid #38527b;
+                background: #1f2630;
+                border: 1px solid #2e3746;
                 border-radius: 18px;
             }
             QPushButton#filterAccordionHeader {
                 background: transparent;
                 border: none;
-                color: #eff6ff;
+                color: #e2e8f0;
                 font-size: 14px;
                 font-weight: 800;
                 padding: 14px 16px;
                 text-align: left;
             }
             QPushButton#filterAccordionHeader:hover {
-                background: rgba(96, 165, 250, 0.08);
+                background: rgba(148, 163, 184, 0.08);
             }
             QPushButton#filterAccordionHeader:disabled {
                 color: #64748b;
             }
             QFrame#filterAccordionBody {
                 background: transparent;
-                border-top: 1px solid rgba(74, 98, 136, 0.55);
+                border-top: 1px solid rgba(71, 85, 105, 0.55);
             }
             QLabel#filterAccordionHint {
-                color: #a9bfdc;
+                color: #94a3b8;
                 font-size: 11px;
             }
             QLabel#pageTitle {
@@ -1211,19 +1194,19 @@ class FaceSearchPage(QWidget):
                 font-weight: 800;
             }
             QLabel#heroTitle {
-                color: #f8fbff;
+                color: #f8fafc;
                 font-size: 28px;
                 font-weight: 900;
             }
             QLabel#heroHint {
-                color: #ccddf8;
+                color: #94a3b8;
                 font-size: 13px;
             }
             QLabel#heroChip {
-                background: rgba(96, 165, 250, 0.16);
-                border: 1px solid rgba(147, 197, 253, 0.38);
+                background: rgba(148, 163, 184, 0.14);
+                border: 1px solid rgba(148, 163, 184, 0.32);
                 border-radius: 12px;
-                color: #dbeafe;
+                color: #e2e8f0;
                 font-size: 11px;
                 font-weight: 800;
                 padding: 6px 10px;
@@ -1238,12 +1221,12 @@ class FaceSearchPage(QWidget):
                 font-weight: 700;
             }
             QLabel#heroFieldLabel {
-                color: #dbeafe;
+                color: #cbd5e1;
                 font-size: 12px;
                 font-weight: 800;
             }
             QLabel#heroFieldHint {
-                color: #9eb8d9;
+                color: #94a3b8;
                 font-size: 11px;
             }
             QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTextEdit {
@@ -1262,8 +1245,8 @@ class FaceSearchPage(QWidget):
                 width: 24px;
             }
             QFrame#dateField {
-                background: #0d1524;
-                border: 1px solid #4a6288;
+                background: #232a34;
+                border: 1px solid #364152;
                 border-radius: 12px;
             }
             QLineEdit#datePickerDisplay {
@@ -1291,8 +1274,8 @@ class FaceSearchPage(QWidget):
             QFrame#searchHero QSpinBox,
             QFrame#searchHero QDoubleSpinBox,
             QFrame#searchHero QTextEdit {
-                background: #0d1524;
-                border: 1px solid #4a6288;
+                background: #232a34;
+                border: 1px solid #364152;
                 border-radius: 12px;
                 color: #f8fafc;
                 min-height: 44px;
@@ -1303,7 +1286,7 @@ class FaceSearchPage(QWidget):
             QFrame#searchHero QSpinBox:focus,
             QFrame#searchHero QDoubleSpinBox:focus,
             QFrame#searchHero QTextEdit:focus {
-                border: 1px solid #93c5fd;
+                border: 1px solid #64748b;
             }
             QCheckBox {
                 color: #dbe4f0;
@@ -1631,11 +1614,6 @@ class FaceSearchPage(QWidget):
             """
         )
 
-    def _combo_box(self) -> QComboBox:
-        combo = QComboBox()
-        combo.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        return combo
-
     def _field_block(self, label_text: str, field: QWidget) -> QWidget:
         wrapper = QWidget()
         wrapper.setObjectName("fieldBlock")
@@ -1647,6 +1625,15 @@ class FaceSearchPage(QWidget):
         layout.addWidget(label)
         layout.addWidget(field)
         return wrapper
+
+    def _allow_horizontal_shrink(self, widget: QWidget) -> None:
+        widget.setMinimumWidth(0)
+        policy = widget.sizePolicy()
+        if policy.horizontalPolicy() == QSizePolicy.Policy.Fixed:
+            policy.setHorizontalPolicy(QSizePolicy.Policy.Preferred)
+        else:
+            policy.setHorizontalPolicy(QSizePolicy.Policy.Expanding)
+        widget.setSizePolicy(policy)
 
     def _hero_field_block(self, label_text: str, field: QWidget, hint_text: str) -> QWidget:
         wrapper = QWidget()
@@ -1698,6 +1685,11 @@ class FaceSearchPage(QWidget):
         self.date_from_input.set_value(now - timedelta(hours=24))
 
     def _sync_filter_toggle_ui(self, *_args) -> None:
+        if self._filter_sections and all(not section.is_collapsible() for section in self._filter_sections):
+            self.filter_panel_open = True
+            self.filter_toggle_btn.setText("All Filters Visible")
+            self.filter_state_chip.setText("All filters visible")
+            return
         open_count = sum(1 for section in self._filter_sections if section.is_expanded())
         self.filter_panel_open = open_count > 0
         if open_count <= 0:
@@ -1711,22 +1703,81 @@ class FaceSearchPage(QWidget):
             self.filter_state_chip.setText(f"{open_count} sections open")
 
     def _sync_filters_window_ui(self) -> None:
-        self.hero_scroll.setVisible(self.filters_window_visible)
+        if hasattr(self, "filters_panel"):
+            self._sync_filters_panel_width(animate=False)
+        else:
+            self.hero_scroll.setVisible(self.filters_window_visible)
         self._update_filters_scroll_height()
-        self.results_filter_btn.setText("Hide Filters" if self.filters_window_visible else "Show Filters")
+        if hasattr(self, "results_filter_btn"):
+            self.results_filter_btn.setText("Hide Sidebar" if self.filters_window_visible else "Show Sidebar")
 
     def _update_filters_scroll_height(self) -> None:
         if not hasattr(self, "hero_scroll"):
             return
-        max_height = max(240, min(520, int(self.height() * 0.52)))
-        self.hero_scroll.setMaximumHeight(max_height)
+        self.hero_scroll.setMaximumHeight(16777215)
+
+    def _target_filters_panel_width(self) -> int:
+        if not hasattr(self, "_root_layout"):
+            return 0
+        layout = self._root_layout
+        margins = layout.contentsMargins()
+        spacing = max(0, layout.spacing())
+        available = self.width() - margins.left() - margins.right() - spacing
+        if available <= 0:
+            return 0
+        return max(0, int(available * 0.2))
+
+    def _set_filters_panel_width(self, width: int) -> None:
+        if not hasattr(self, "filters_panel"):
+            return
+        self.filters_panel.setMaximumWidth(max(0, width))
+
+    def _animate_filters_panel_width(self, target: int) -> None:
+        if not hasattr(self, "filters_panel"):
+            return
+        target = max(0, int(target))
+        if self._filters_slide_animation is not None:
+            try:
+                self._filters_slide_animation.stop()
+            except Exception:
+                pass
+            self._filters_slide_animation.deleteLater()
+            self._filters_slide_animation = None
+
+        current = max(0, int(self.filters_panel.maximumWidth()))
+        if target > 0:
+            self.filters_panel.setVisible(True)
+        if current == target:
+            if target == 0:
+                self.filters_panel.setVisible(False)
+            return
+
+        animation = QPropertyAnimation(self.filters_panel, b"maximumWidth", self)
+        animation.setDuration(220)
+        animation.setStartValue(current)
+        animation.setEndValue(target)
+        animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        if target == 0:
+            animation.finished.connect(lambda: self.filters_panel.setVisible(False))
+        self._filters_slide_animation = animation
+        animation.start()
+
+    def _sync_filters_panel_width(self, animate: bool = False) -> None:
+        if not hasattr(self, "filters_panel") or not hasattr(self, "_root_layout"):
+            return
+        target = self._target_filters_panel_width() if self.filters_window_visible else 0
+        if animate:
+            self._animate_filters_panel_width(target)
+            return
+        self._set_filters_panel_width(target)
+        self.filters_panel.setVisible(target > 0)
 
     def _set_filters_window_visible(self, visible: bool) -> None:
         self.filters_window_visible = visible
-        if not visible:
-            self._set_filter_panel_visible(False)
-            return
-        self._sync_filters_window_ui()
+        self._sync_filters_panel_width(animate=True)
+        self._update_filters_scroll_height()
+        if hasattr(self, "results_filter_btn"):
+            self.results_filter_btn.setText("Hide Sidebar" if self.filters_window_visible else "Show Sidebar")
 
     def _set_filter_panel_visible(self, visible: bool) -> None:
         for section in self._filter_sections:
@@ -1742,6 +1793,7 @@ class FaceSearchPage(QWidget):
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
+        self._sync_filters_panel_width(animate=False)
         self._update_filters_scroll_height()
 
     def set_view_mode(self, grid: bool) -> None:
@@ -1808,8 +1860,8 @@ class FaceSearchPage(QWidget):
         self.has_searched = False
         self._apply_default_date_range()
         self._clear_reference_face()
-        self.gender_combo.setCurrentIndex(0)
-        self.match_spin.setValue(70.0)
+        self.gender_combo.set_value(None)
+        self.match_spin.setValue(70)
         self.age_from_spin.setValue(1)
         self.age_to_spin.setValue(100)
         self.top_color_select.set_value([])
@@ -1819,7 +1871,6 @@ class FaceSearchPage(QWidget):
         self.whitelist_check.setChecked(False)
         self.search_store.clear()
         self.current_page = 0
-        self._set_filter_panel_visible(False)
         self.refresh()
 
     def _current_payload(self) -> Dict[str, object]:
@@ -1829,9 +1880,9 @@ class FaceSearchPage(QWidget):
             "date_from": self.date_from_input.value(),
             "date_to": self.date_to_input.value(),
             "embedding": self._reference_embedding,
-            "age_from": int(self.age_from_spin.value()),
-            "age_to": int(self.age_to_spin.value()),
-            "gender": self.gender_combo.currentData(),
+            "age_from": int(round(self.age_from_spin.value())),
+            "age_to": int(round(self.age_to_spin.value())),
+            "gender": self.gender_combo.value(),
             "top_color": list(self.top_color_select.value()),
             "bottom_color": list(self.bottom_color_select.value()),
             "match": int(round(self.match_spin.value())),
@@ -1849,11 +1900,10 @@ class FaceSearchPage(QWidget):
         if isinstance(date_from, datetime) and isinstance(date_to, datetime) and date_from > date_to:
             self._show_error("Start time must be earlier than end time.")
             return
-        if int(self.age_from_spin.value()) > int(self.age_to_spin.value()):
+        if int(round(self.age_from_spin.value())) > int(round(self.age_to_spin.value())):
             self._show_error("Age From must be less than or equal to Age To.")
             return
 
-        self._set_filters_window_visible(False)
         self.has_searched = True
         self.search_in_progress = True
         self.search_store.loading = True
@@ -1873,7 +1923,6 @@ class FaceSearchPage(QWidget):
         self.search_store.loading = False
         self.search_in_progress = False
         self.current_page = 0
-        self._set_filters_window_visible(False)
         if QApplication.overrideCursor() is not None:
             QApplication.restoreOverrideCursor()
         self.search_btn.setEnabled(True)
@@ -1885,7 +1934,6 @@ class FaceSearchPage(QWidget):
         self.search_store.loading = False
         self.search_in_progress = False
         self.current_page = 0
-        self._set_filters_window_visible(False)
         if QApplication.overrideCursor() is not None:
             QApplication.restoreOverrideCursor()
         self.search_btn.setEnabled(True)
@@ -1898,18 +1946,23 @@ class FaceSearchPage(QWidget):
             self._search_thread.deleteLater()
         self._search_thread = None
 
-    def _on_grid_columns_changed(self, _index: int) -> None:
-        value = self.grid_cols_combo.currentData()
+    def _on_grid_columns_changed(self, value=None) -> None:
+        if value is None:
+            value = self.grid_cols_combo.value()
         if isinstance(value, int) and value > 0:
             self.grid_columns = value
         self.refresh()
 
-    def _on_rows_changed(self, _index: int) -> None:
-        value = self.rows_combo.currentData()
+    def _on_rows_changed(self, value=None) -> None:
+        if value is None:
+            value = self.rows_combo.value()
         if not isinstance(value, int) or value <= 0:
             return
         self.rows_per_page = value
         self.current_page = 0
+        table_index = self.table._page_size_combo.findData(value)
+        if table_index >= 0:
+            self.table._page_size_combo.setCurrentIndex(table_index)
         self.table.set_page_size(value)
         self.refresh()
 

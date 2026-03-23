@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QProgressBar,
     QPushButton,
+    QSizePolicy,
     QScrollArea,
     QStackedWidget,
     QSplitter,
@@ -117,6 +118,22 @@ def _env_flag(name: str, default: bool = False) -> bool:
     if not raw:
         return default
     return raw in {"1", "true", "yes", "on"}
+
+
+def _safe_delete_later(widget: Optional[QObject]) -> None:
+    if widget is None:
+        return
+    try:
+        widget.deleteLater()
+    except RuntimeError:
+        pass
+
+
+def _allow_horizontal_shrink(widget: QWidget) -> None:
+    widget.setMinimumWidth(0)
+    size_policy = widget.sizePolicy()
+    size_policy.setHorizontalPolicy(QSizePolicy.Policy.Ignored)
+    widget.setSizePolicy(size_policy)
 
 
 def _grid_size_value(value: object, default: int = 2) -> int:
@@ -412,19 +429,26 @@ class ResultCard(QFrame):
         self._reply = None
         self._image_url = image_url
         self.setObjectName("resultCard")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setMaximumHeight(100)
         self.setCursor(Qt.PointingHandCursor)
         self.setToolTip("Click to view record details")
         self.setStyleSheet(
             """
             QFrame#resultCard {
-                background: #1a1f26;
-                border: 1px solid #2a3038;
-                border-radius: 12px;
+                background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
+                    stop:0 rgba(24, 30, 39, 0.98),
+                    stop:1 rgba(16, 22, 30, 0.98));
+                border: 1px solid rgba(72, 85, 102, 0.88);
+                border-top: 1px solid rgba(203, 213, 225, 0.12);
+                border-radius: 14px;
             }
             QFrame#resultCard:hover {
-                border: 1px solid #3b82f6;
-                background: #1d2430;
+                border: 1px solid rgba(96, 165, 250, 0.94);
+                border-top: 1px solid rgba(191, 219, 254, 0.18);
+                background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
+                    stop:0 rgba(29, 38, 51, 0.99),
+                    stop:1 rgba(18, 26, 37, 0.99));
             }
             QLabel#cardTitle {
                 color: #f8fafc;
@@ -436,10 +460,11 @@ class ResultCard(QFrame):
                 font-size: 11px;
             }
             QLabel#cardChip {
-                background: rgba(59, 130, 246, 0.2);
-                color: #93c5fd;
-                border-radius: 6px;
-                padding: 2px 6px;
+                background: rgba(37, 99, 235, 0.18);
+                color: #bfdbfe;
+                border: 1px solid rgba(96, 165, 250, 0.34);
+                border-radius: 7px;
+                padding: 2px 7px;
                 font-size: 10px;
                 font-weight: 600;
             }
@@ -942,10 +967,14 @@ class CameraQueuePanel(QFrame):
 
         self.camera_title = QLabel("No camera selected")
         self.camera_title.setObjectName("queuePanelCamera")
+        self.camera_title.setWordWrap(True)
+        _allow_horizontal_shrink(self.camera_title)
         root.addWidget(self.camera_title)
 
         self.camera_meta = QLabel("Use the queue button on a stream to open its detections queue.")
         self.camera_meta.setObjectName("queuePanelMeta")
+        self.camera_meta.setWordWrap(True)
+        _allow_horizontal_shrink(self.camera_meta)
         root.addWidget(self.camera_meta)
 
         self.queue_scroll = QScrollArea()
@@ -1092,6 +1121,7 @@ class AccordionHeader(QFrame):
     ):
         super().__init__(parent)
         self.setObjectName("cameraSectionHeader")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setCursor(Qt.PointingHandCursor)
 
         layout = QHBoxLayout(self)
@@ -1104,11 +1134,13 @@ class AccordionHeader(QFrame):
 
         self.title_label = QLabel(title)
         self.title_label.setObjectName("cameraSectionTitle")
+        _allow_horizontal_shrink(self.title_label)
         text_col.addWidget(self.title_label)
 
         self.subtitle_label = QLabel(subtitle)
         self.subtitle_label.setObjectName("cameraSectionMeta")
         self.subtitle_label.setWordWrap(True)
+        _allow_horizontal_shrink(self.subtitle_label)
         self.subtitle_label.setVisible(bool(subtitle))
         text_col.addWidget(self.subtitle_label)
         layout.addLayout(text_col, 1)
@@ -1164,6 +1196,7 @@ class CameraAccordionRow(QFrame):
         self._camera_name = str(getattr(camera, "name", "Unknown Camera") or "Unknown Camera")
         self._camera_ip = _camera_ip(camera)
         self.setObjectName("cameraAccordionRow")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setProperty("online", bool(getattr(camera, "online", False)))
         self.setCursor(Qt.OpenHandCursor)
 
@@ -1181,6 +1214,8 @@ class CameraAccordionRow(QFrame):
 
         self.title_label = QLabel(self._camera_name)
         self.title_label.setObjectName("cameraRowTitle")
+        self.title_label.setToolTip(self._camera_name)
+        _allow_horizontal_shrink(self.title_label)
         title_row.addWidget(self.title_label, 1)
 
         self.state_badge = QLabel("Online" if getattr(camera, "online", False) else "Offline")
@@ -1191,6 +1226,8 @@ class CameraAccordionRow(QFrame):
 
         self.meta_label = QLabel(self._camera_ip or "No camera IP")
         self.meta_label.setObjectName("cameraRowMeta")
+        self.meta_label.setToolTip(self.meta_label.text())
+        _allow_horizontal_shrink(self.meta_label)
         text_col.addWidget(self.meta_label)
 
         info_row = QHBoxLayout()
@@ -1211,6 +1248,8 @@ class CameraAccordionRow(QFrame):
         info_row.addStretch()
         self.hint_label = QLabel("Drag to grid or double click to maximize")
         self.hint_label.setObjectName("cameraDragHint")
+        self.hint_label.setToolTip(self.hint_label.text())
+        _allow_horizontal_shrink(self.hint_label)
         info_row.addWidget(self.hint_label, 0, Qt.AlignRight)
         text_col.addLayout(info_row)
 
@@ -1314,6 +1353,7 @@ class CameraAccordionSection(QFrame):
 
         self.body = QFrame()
         self.body.setObjectName("cameraSectionBody")
+        self.body.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.body_layout = QVBoxLayout(self.body)
         self.body_layout.setContentsMargins(10, 0, 10, 10)
         self.body_layout.setSpacing(8)
@@ -1349,6 +1389,7 @@ class DragCameraTree(QScrollArea):
 
         self.content = QWidget()
         self.content.setObjectName("cameraAccordionContent")
+        self.content.setMinimumWidth(0)
         self.content_layout = QVBoxLayout(self.content)
         self.content_layout.setContentsMargins(0, 0, 0, 0)
         self.content_layout.setSpacing(10)
@@ -1510,6 +1551,7 @@ class GridCell(QFrame):
         self.interaction_overlay.setAutoFillBackground(False)
         self.interaction_overlay.setMouseTracking(True)
         self.interaction_overlay.setStyleSheet("background-color: rgba(0, 0, 0, 0); border: none;")
+        self.destroyed.connect(lambda *_args, overlay=self.interaction_overlay: _safe_delete_later(overlay))
         self.overlay_layout = QVBoxLayout(self.interaction_overlay)
         self.overlay_layout.setContentsMargins(8, 8, 8, 8)
         self.overlay_layout.setSpacing(0)
@@ -1737,22 +1779,13 @@ class GridCell(QFrame):
             self._stop_stream()
             self.video_label.setProperty("active", False)
             self._set_placeholder_state("No Camera", f"Slot {self.index + 1} is empty", "monitor.svg")
-            self._streaming_fps = 0
-            self._processing_fps = 0
-            self._face_badge_text = ""
+            self._sync_camera_runtime_badges()
             self.setToolTip(f"Empty slot {self.index + 1}")
         else:
             cam = self.camera
             cam_ip = _camera_ip(cam)
             self.video_label.setProperty("active", False)
-            self._streaming_fps = _as_int(getattr(cam, "streaming_fps", 0))
-            self._processing_fps = _as_int(getattr(cam, "processing_fps", 0))
-            if str(getattr(cam, "process_type", "") or "") == "face" and bool(getattr(cam, "face_show_rect", False)):
-                self._face_badge_text = (
-                    f"In {_as_int(getattr(cam, 'total_in', 0))}   Out {_as_int(getattr(cam, 'total_out', 0))}"
-                )
-            else:
-                self._face_badge_text = ""
+            self._sync_camera_runtime_badges()
             self.setToolTip(cam.name)
             if not self._effective_rtsp_url():
                 self._set_placeholder_state("No Video", f"{cam.name}\n{cam_ip}\nNo RTSP URL", "live_view.svg")
@@ -1775,6 +1808,26 @@ class GridCell(QFrame):
             self._sync_overlay_geometry()
             self.interaction_overlay.raise_()
 
+    def _sync_camera_runtime_badges(self) -> None:
+        if self.camera is None:
+            self._streaming_fps = 0
+            self._processing_fps = 0
+            self._face_badge_text = ""
+            return
+        cam = self.camera
+        self._streaming_fps = _as_int(getattr(cam, "streaming_fps", 0))
+        self._processing_fps = _as_int(getattr(cam, "processing_fps", 0))
+        if str(getattr(cam, "process_type", "") or "") == "face" and bool(getattr(cam, "face_show_rect", False)):
+            self._face_badge_text = (
+                f"In {_as_int(getattr(cam, 'total_in', 0))}   Out {_as_int(getattr(cam, 'total_out', 0))}"
+            )
+        else:
+            self._face_badge_text = ""
+
+    def sync_runtime_status(self) -> None:
+        self._sync_camera_runtime_badges()
+        self._update_bottom_badges()
+
     def _update_overlay_visibility(self, has_camera: Optional[bool] = None) -> None:
         if has_camera is None:
             has_camera = self.camera is not None
@@ -1796,10 +1849,12 @@ class GridCell(QFrame):
         show_overlay_layer = bool(has_camera and not self._tv_mode and host_visible)
         if show_overlay_layer:
             self._sync_overlay_geometry()
-            self.interaction_overlay.show()
+            if not self.interaction_overlay.isVisible():
+                self.interaction_overlay.show()
             self.interaction_overlay.raise_()
         else:
-            self.interaction_overlay.hide()
+            if self.interaction_overlay.isVisible():
+                self.interaction_overlay.hide()
         self.top_controls.setVisible(show_top_controls)
         self.bottom_info.setVisible(bool(has_camera and not self._tv_mode and host_visible))
 
@@ -2036,6 +2091,8 @@ class GridCell(QFrame):
             host = self.video_label
             if not host.isVisible():
                 return
+            if host.width() <= 0 or host.height() <= 0:
+                return
             host_top_left = host.mapToGlobal(QPoint(0, 0))
             self.interaction_overlay.setGeometry(
                 host_top_left.x(),
@@ -2250,6 +2307,9 @@ class CameraDashboard(QMainWindow):
         self.focused_camera_id: Optional[int] = None
         self.queue_camera_id: Optional[int] = None
         self._sidebar_ratio = 0.20
+        self._sidebar_min_width = 260
+        self._sidebar_max_width = 560
+        self._content_min_width = 240
         self._camera_sidebar_width = 460
         self._queue_sidebar_width = 460
         self.ws_client = MonitorWsClient(self)
@@ -2314,8 +2374,8 @@ class CameraDashboard(QMainWindow):
     def _build_sidebar(self) -> QWidget:
         sidebar = QFrame()
         sidebar.setObjectName("sidebar")
-        sidebar.setMinimumWidth(260)
-        sidebar.setMaximumWidth(560)
+        sidebar.setMinimumWidth(self._sidebar_min_width)
+        sidebar.setMaximumWidth(self._sidebar_max_width)
 
         layout = QVBoxLayout(sidebar)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -2620,27 +2680,37 @@ class CameraDashboard(QMainWindow):
                 min-width: 16px;
             }
             QFrame#cameraSectionBody {
-                background: rgba(10, 14, 19, 0.55);
-                border: 1px solid #212933;
-                border-radius: 16px;
+                background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
+                    stop:0 rgba(11, 15, 21, 0.92),
+                    stop:1 rgba(8, 12, 18, 0.86));
+                border: 1px solid rgba(56, 68, 84, 0.82);
+                border-radius: 18px;
             }
             QFrame#cameraAccordionRow {
                 background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
-                    stop:0 #121821,
-                    stop:1 #0f141b);
-                border: 1px solid #324152;
-                border-left: 4px solid #475569;
-                border-radius: 14px;
+                    stop:0 rgba(19, 27, 38, 0.98),
+                    stop:0.52 rgba(14, 20, 29, 0.98),
+                    stop:1 rgba(10, 15, 22, 0.98));
+                border: 1px solid rgba(77, 94, 116, 0.88);
+                border-top: 1px solid rgba(148, 163, 184, 0.16);
+                border-left: 4px solid rgba(116, 139, 168, 0.92);
+                border-radius: 16px;
             }
             QFrame#cameraAccordionRow[online="true"] {
-                border: 1px solid rgba(34, 197, 94, 0.34);
+                background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
+                    stop:0 rgba(18, 30, 29, 0.98),
+                    stop:1 rgba(11, 18, 21, 0.98));
+                border: 1px solid rgba(63, 146, 109, 0.66);
+                border-top: 1px solid rgba(134, 239, 172, 0.14);
                 border-left: 4px solid #22c55e;
             }
             QFrame#cameraAccordionRow:hover {
                 background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
-                    stop:0 #17202b,
-                    stop:1 #121a23);
-                border: 1px solid #60a5fa;
+                    stop:0 rgba(24, 37, 52, 0.99),
+                    stop:0.55 rgba(17, 28, 41, 0.99),
+                    stop:1 rgba(12, 20, 30, 0.99));
+                border: 1px solid rgba(96, 165, 250, 0.94);
+                border-top: 1px solid rgba(191, 219, 254, 0.18);
                 border-left: 4px solid #3b82f6;
             }
             QLabel#cameraRowTitle {
@@ -2649,44 +2719,44 @@ class CameraDashboard(QMainWindow):
                 font-weight: 700;
             }
             QLabel#cameraRowMeta {
-                color: #8ea0b5;
+                color: #9fb1c8;
                 font-size: 11px;
             }
             QLabel#rowStateBadge {
                 border-radius: 999px;
-                padding: 3px 8px;
+                padding: 4px 9px;
                 font-size: 10px;
                 font-weight: 700;
             }
             QLabel#rowStateBadge[tone="online"] {
-                background: rgba(22, 163, 74, 0.16);
-                color: #86efac;
-                border: 1px solid rgba(34, 197, 94, 0.42);
+                background: rgba(22, 163, 74, 0.17);
+                color: #bbf7d0;
+                border: 1px solid rgba(74, 222, 128, 0.42);
             }
             QLabel#rowStateBadge[tone="offline"] {
                 background: rgba(148, 163, 184, 0.12);
-                color: #cbd5e1;
-                border: 1px solid #374151;
+                color: #dbe4ef;
+                border: 1px solid rgba(71, 85, 105, 0.88);
             }
             QLabel#cameraMetaBadge,
             QLabel#cameraFpsBadge {
                 border-radius: 999px;
-                padding: 3px 8px;
+                padding: 4px 9px;
                 font-size: 10px;
                 font-weight: 700;
             }
             QLabel#cameraMetaBadge {
-                background: rgba(59, 130, 246, 0.14);
-                color: #bfdbfe;
-                border: 1px solid rgba(59, 130, 246, 0.34);
+                background: rgba(37, 99, 235, 0.16);
+                color: #dbeafe;
+                border: 1px solid rgba(96, 165, 250, 0.34);
             }
             QLabel#cameraFpsBadge {
-                background: rgba(15, 23, 42, 0.9);
-                color: #cbd5e1;
-                border: 1px solid #334155;
+                background: rgba(15, 23, 42, 0.92);
+                color: #d8e1ea;
+                border: 1px solid rgba(71, 85, 105, 0.92);
             }
             QLabel#cameraDragHint {
-                color: #64748b;
+                color: #7a8ca3;
                 font-size: 10px;
                 font-weight: 600;
             }
@@ -2912,6 +2982,7 @@ class CameraDashboard(QMainWindow):
             return
 
         client_changed = False
+        sidebar_needs_refresh = False
         for updated in client_list:
             if not isinstance(updated, dict):
                 continue
@@ -2924,12 +2995,20 @@ class CameraDashboard(QMainWindow):
 
             for key in ("name", "ip", "port", "last_seen", "online"):
                 if key in updated:
-                    setattr(client, key, updated.get(key))
+                    value = updated.get(key)
+                    if getattr(client, key, None) != value:
+                        setattr(client, key, value)
+                        client_changed = True
+                        if key in {"name", "ip", "port", "online"}:
+                            sidebar_needs_refresh = True
             status_data = updated.get("data")
-            setattr(client, "monitor_data", status_data if isinstance(status_data, dict) else {})
-            client_changed = True
+            next_monitor_data = status_data if isinstance(status_data, dict) else {}
+            if getattr(client, "monitor_data", None) != next_monitor_data:
+                setattr(client, "monitor_data", next_monitor_data)
+                client_changed = True
 
         changed_ids: set[int] = set()
+        full_refresh_ids: set[int] = set()
         for updated in camera_list:
             if not isinstance(updated, dict):
                 continue
@@ -2958,17 +3037,32 @@ class CameraDashboard(QMainWindow):
                 flattened_updates["streaming_fps"] = 0
                 flattened_updates["processing_fps"] = 0
 
+            camera_changed = False
             for key, value in flattened_updates.items():
+                if getattr(cam, key, None) == value:
+                    continue
                 setattr(cam, key, value)
-            changed_ids.add(cam_id)
+                camera_changed = True
+                if key in {"camera_ip", "ip", "camera_port", "camera_username", "camera_password", "camera_type"}:
+                    full_refresh_ids.add(cam_id)
+                if key in {"name", "online", "ip", "camera_ip", "process_type", "client_id_1", "client_id_2"}:
+                    sidebar_needs_refresh = True
+                if key in {"process_type", "face_show_rect"}:
+                    full_refresh_ids.add(cam_id)
+            if camera_changed:
+                changed_ids.add(cam_id)
 
         if not changed_ids and not client_changed:
             return
         for cell in self.screen_cells:
             if cell.camera and cell.camera.id in changed_ids:
-                cell.refresh()
+                if cell.camera.id in full_refresh_ids:
+                    cell.refresh()
+                else:
+                    cell.sync_runtime_status()
         self._sync_camera_queue_panel()
-        self.populate_camera_tree()
+        if sidebar_needs_refresh:
+            self.populate_camera_tree()
 
     def populate_camera_tree(self):
         query = self.search.text().strip().lower()
@@ -3080,10 +3174,8 @@ class CameraDashboard(QMainWindow):
             sections.append(
                 {
                     "key": "unassigned",
-                    "title": "Cameras Without Process Client",
-                    "subtitle": "Cameras not linked to a process client",
+                    "title": "Cameras",
                     "count_text": f"{online_count}/{len(visible_unassigned)} live",
-                    "state_text": "No Process Client",
                     "state_tone": "neutral",
                     "expanded": True,
                     "force_expanded": bool(query),
@@ -3234,6 +3326,9 @@ class CameraDashboard(QMainWindow):
             total_width = sum(sizes) if sizes else self.width()
         total_width = max(total_width, 2)
         sidebar_width = max(1, int(total_width * self._sidebar_ratio))
+        sidebar_width = max(self._sidebar_min_width, min(self._sidebar_max_width, sidebar_width))
+        if total_width - sidebar_width < self._content_min_width:
+            sidebar_width = max(1, total_width - self._content_min_width)
         content_width = max(1, total_width - sidebar_width)
         self._camera_sidebar_width = sidebar_width
         self._queue_sidebar_width = sidebar_width

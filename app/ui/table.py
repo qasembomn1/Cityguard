@@ -7,7 +7,6 @@ from typing import Any, Callable, Dict, List, Optional
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QComboBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -18,6 +17,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from app.ui.select import PrimeSelect
 
 
 RowData = Dict[str, Any]
@@ -65,6 +65,7 @@ class PrimeDataTable(QWidget):
         root.setSpacing(10)
 
         self.table = QTableWidget(0, 0)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -118,6 +119,20 @@ class PrimeDataTable(QWidget):
             QScrollBar::sub-line:vertical {
                 height: 0;
             }
+            QScrollBar:horizontal {
+                background: transparent;
+                height: 10px;
+                margin: 0 6px 6px 6px;
+            }
+            QScrollBar::handle:horizontal {
+                background: #585d68;
+                min-width: 26px;
+                border-radius: 5px;
+            }
+            QScrollBar::add-line:horizontal,
+            QScrollBar::sub-line:horizontal {
+                width: 0;
+            }
             """
         )
         root.addWidget(self.table, 1)
@@ -136,28 +151,13 @@ class PrimeDataTable(QWidget):
         self._size_label.setStyleSheet("color:#b8bec9;")
         footer.addWidget(self._size_label)
 
-        self._page_size_combo = QComboBox()
-        self._page_size_combo.setFixedWidth(86)
-        self._page_size_combo.setStyleSheet(
-            """
-            QComboBox {
-                background: #2a2d33;
-                color: #f1f5f9;
-                border: 1px solid #3a3f47;
-                border-radius: 8px;
-                padding: 4px 8px;
-            }
-            QComboBox QAbstractItemView {
-                background: #1f2126;
-                color: #f1f5f9;
-                selection-background-color: #2e69da;
-            }
-            """
+        self._page_size_combo = PrimeSelect(
+            options=[{"label": str(size), "value": size} for size in self._page_size_options],
+            placeholder=str(self._page_size),
         )
-        for size in self._page_size_options:
-            self._page_size_combo.addItem(str(size), size)
-        self._page_size_combo.setCurrentIndex(self._page_size_options.index(self._page_size))
-        self._page_size_combo.currentIndexChanged.connect(self._on_page_size_changed)
+        self._page_size_combo.setFixedWidth(86)
+        self._page_size_combo.set_value(self._page_size)
+        self._page_size_combo.value_changed.connect(self._on_page_size_changed)
         footer.addWidget(self._page_size_combo)
 
         self._prev_btn = QPushButton("Prev")
@@ -239,11 +239,7 @@ class PrimeDataTable(QWidget):
         if self._page_size == size:
             return
         self._page_size = size
-        combo_index = self._page_size_combo.findData(size)
-        if combo_index >= 0 and combo_index != self._page_size_combo.currentIndex():
-            self._page_size_combo.blockSignals(True)
-            self._page_size_combo.setCurrentIndex(combo_index)
-            self._page_size_combo.blockSignals(False)
+        self._page_size_combo.set_value(size)
         self._page_index = 0
         self._refresh()
 
@@ -307,8 +303,8 @@ class PrimeDataTable(QWidget):
         self._page_index = 0
         self._refresh()
 
-    def _on_page_size_changed(self, _index: int) -> None:
-        size = self._page_size_combo.currentData()
+    def _on_page_size_changed(self, value: object = None) -> None:
+        size = value if value is not None else self._page_size_combo.value()
         if not isinstance(size, int):
             return
         self._page_size = size
@@ -417,7 +413,7 @@ class PrimeDataTable(QWidget):
                     widget = col.widget_factory(row)
                     if col.width is not None:
                         widget.setMaximumWidth(max(20, col.width - 8))
-                    self.table.setCellWidget(r, c, widget)
+                    self.table.setCellWidget(r, c, self._wrap_cell_widget(widget, col.alignment))
                     continue
 
                 value = row.get(col.key, "")
@@ -448,6 +444,36 @@ class PrimeDataTable(QWidget):
         self._prev_btn.setEnabled(self._page_index > 0)
         self._next_btn.setEnabled((self._page_index + 1) < pages)
         self.page_changed.emit(self._page_index + 1, pages if total else 0, total)
+
+    def _wrap_cell_widget(self, widget: QWidget, alignment: Qt.AlignmentFlag) -> QWidget:
+        wrapper = QWidget()
+        wrapper.setStyleSheet("background: transparent;")
+        wrapper.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+
+        layout = QHBoxLayout(wrapper)
+        layout.setContentsMargins(8, 0, 8, 0)
+        layout.setSpacing(0)
+        layout.addWidget(widget)
+        layout.setAlignment(widget, self._widget_alignment(alignment))
+        return wrapper
+
+    def _widget_alignment(self, alignment: Qt.AlignmentFlag) -> Qt.AlignmentFlag:
+        horizontal = alignment & (
+            Qt.AlignmentFlag.AlignLeft
+            | Qt.AlignmentFlag.AlignRight
+            | Qt.AlignmentFlag.AlignHCenter
+            | Qt.AlignmentFlag.AlignJustify
+        )
+        vertical = alignment & (
+            Qt.AlignmentFlag.AlignTop
+            | Qt.AlignmentFlag.AlignBottom
+            | Qt.AlignmentFlag.AlignVCenter
+        )
+        if not horizontal:
+            horizontal = Qt.AlignmentFlag.AlignLeft
+        if not vertical:
+            vertical = Qt.AlignmentFlag.AlignVCenter
+        return horizontal | vertical
 
     def _elide_text(self, text: str, column_index: int) -> str:
         width = self.table.columnWidth(column_index) - 20

@@ -13,18 +13,12 @@ from PySide6.QtGui import QIcon,QPainter,QPainterPath,QColor
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
-    QComboBox,
-    QDialog,
     QFormLayout,
     QFrame,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMainWindow,
-    QMessageBox,
-    QPushButton,
     QSizePolicy,
-    QSpinBox,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -40,7 +34,13 @@ from app.services.auth.auth_service import AuthService
 from app.services.home.devices.client_service import ClientService
 from app.store.auth import AuthStore
 from app.store.home.devices.client_store import ClientStore
+from app.ui.button import PrimeButton
+from app.ui.confirm_dialog import PrimeConfirmDialog
+from app.ui.dialog import PrimeDialog
+from app.ui.input import PrimeInput
+from app.ui.select import PrimeSelect
 from app.ui.table import PrimeDataTable, PrimeTableColumn
+from app.ui.toast import show_toast_message
 from app.utils.env import resolve_http_base_url
 
 
@@ -502,104 +502,85 @@ class ClientUsageWs(QObject):
         }
 
 
-class ClientFormDialog(QDialog):
+class ClientFormDialog(PrimeDialog):
     submitted = Signal(dict, bool)
 
     def __init__(self, client: Optional[Client] = None, parent: Optional[QWidget] = None) -> None:
-        super().__init__(parent)
         self.client = client
         self.is_edit_mode = client is not None
+        ok_text = "Update Client" if self.is_edit_mode else "Add Client"
+        title = "Edit Client" if self.is_edit_mode else "Add New Client"
 
-        self.setWindowTitle("Edit Client" if self.is_edit_mode else "Add New Client")
-        self.resize(460, 360)
+        super().__init__(
+            title=title,
+            parent=parent,
+            width=560,
+            height=500,
+            show_footer=True,
+            ok_text=ok_text,
+            cancel_text="Cancel",
+        )
+        self.setMinimumSize(480, 460)
+        self.ok_button.clicked.disconnect()
+        self.ok_button.clicked.connect(self._submit)
 
-        root = QVBoxLayout(self)
+        self.name_edit = PrimeInput(placeholder_text="Client name")
+        self.ip_edit = PrimeInput(placeholder_text="192.168.x.x")
+        self.port_edit = PrimeInput(
+            type="number", minimum=0, maximum=65535, value=5050,
+            placeholder_text="5050",
+        )
+        self.type_combo = PrimeSelect()
+        self.type_combo.set_options([
+            {"label": "Process", "value": "process"},
+            {"label": "Record", "value": "record"},
+        ])
+        self.type_combo.set_value("process")
+
+        self.save_path_edit = PrimeInput(placeholder_text="/path/to/save")
+
+        self.local_check = QCheckBox("Local Client")
+        self.local_check.setChecked(True)
+        self.local_check.setStyleSheet("""
+            QCheckBox { color: #d7dde8; font-size: 13px; spacing: 8px; }
+            QCheckBox::indicator { width: 18px; height: 18px; border-radius: 5px;
+                border: 1px solid #3a424f; background: #2a2d31; }
+            QCheckBox::indicator:checked { background: #3b82f6; border-color: #3b82f6; }
+        """)
 
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
         form.setFormAlignment(Qt.AlignmentFlag.AlignTop)
-        form.setSpacing(10)
+        form.setSpacing(12)
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setHorizontalSpacing(16)
+        form.addRow(self._label("Name *"), self.name_edit)
+        form.addRow(self._label("IP *"), self.ip_edit)
+        form.addRow(self._label("Port"), self.port_edit)
+        form.addRow(self._label("Type *"), self.type_combo)
+        form.addRow(self._label("Save Path"), self.save_path_edit)
+        form.addRow(QLabel(""), self.local_check)
 
-        self.name_edit = QLineEdit()
-        self.ip_edit = QLineEdit()
-        self.port_spin = QSpinBox()
-        self.port_spin.setMaximum(65535)
-        self.port_spin.setValue(5050)
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
+        content_layout.addLayout(form)
+        self.set_content(content)
 
-        self.type_combo = QComboBox()
-        self.type_combo.addItem("Process", "process")
-        self.type_combo.addItem("Record", "record")
-
-        self.save_path_edit = QLineEdit()
-        self.local_check = QCheckBox("Local Client")
-        self.local_check.setChecked(True)
-
-        form.addRow("Name *", self.name_edit)
-        form.addRow("IP *", self.ip_edit)
-        form.addRow("Port", self.port_spin)
-        form.addRow("Type *", self.type_combo)
-        form.addRow("Save Path", self.save_path_edit)
-        form.addRow("", self.local_check)
-        root.addLayout(form)
-
-        controls = QHBoxLayout()
-        controls.addStretch(1)
-
-        cancel_btn = QPushButton("Cancel")
-        cancel_btn.clicked.connect(self.reject)
-        controls.addWidget(cancel_btn)
-
-        save_btn = QPushButton("Save")
-        save_btn.clicked.connect(self._submit)
-        controls.addWidget(save_btn)
-
-        root.addLayout(controls)
-
-        self._apply_style()
         if self.client is not None:
             self._fill(self.client)
 
-    def _apply_style(self) -> None:
-        self.setStyleSheet(
-            """
-            QDialog {
-                background: #171a1f;
-                color: #f1f5f9;
-            }
-            QLineEdit, QSpinBox, QComboBox {
-                background: #232831;
-                border: 1px solid #3a424f;
-                border-radius: 8px;
-                color: #f8fafc;
-                padding: 6px 8px;
-                min-height: 24px;
-            }
-            QCheckBox {
-                color: #d7dde8;
-                spacing: 8px;
-            }
-            QPushButton {
-                background: #2b3340;
-                border: 1px solid #425062;
-                border-radius: 8px;
-                color: #f8fafc;
-                padding: 7px 14px;
-                font-weight: 600;
-            }
-            QPushButton:hover {
-                background: #35507f;
-                border-color: #4d76bb;
-            }
-            """
-        )
+    def _label(self, text: str) -> QLabel:
+        lbl = QLabel(text)
+        lbl.setStyleSheet("color: #94a3b8; font-size: 13px; font-weight: 600;")
+        return lbl
 
     def _fill(self, client: Client) -> None:
         self.name_edit.setText(client.name)
         self.ip_edit.setText(client.ip)
-        self.port_spin.setValue(max(0, int(client.port or 0)))
-        idx = self.type_combo.findData(client.type)
-        if idx >= 0:
-            self.type_combo.setCurrentIndex(idx)
+        self.port_edit.setValue(max(0, int(client.port or 0)))
+        self.type_combo.set_value(client.type or "process")
         self.save_path_edit.setText(client.save_path)
         self.local_check.setChecked(bool(client.is_local))
 
@@ -607,17 +588,17 @@ class ClientFormDialog(QDialog):
         name = self.name_edit.text().strip()
         ip = self.ip_edit.text().strip()
         if not name:
-            QMessageBox.warning(self, "Missing", "Client name is required.")
+            show_toast_message(self, "warn", "Missing", "Client name is required.")
             return
         if not ip:
-            QMessageBox.warning(self, "Missing", "Client IP is required.")
+            show_toast_message(self, "warn", "Missing", "Client IP is required.")
             return
 
         payload = {
             "name": name,
             "ip": ip,
-            "port": int(self.port_spin.value()),
-            "type": str(self.type_combo.currentData() or "process"),
+            "port": int(self.port_edit.value()),
+            "type": str(self.type_combo.value() or "process"),
             "save_path": self.save_path_edit.text().strip(),
             "is_local": bool(self.local_check.isChecked()),
         }
@@ -714,8 +695,7 @@ class ClientPage(QWidget):
         toolbar.setSpacing(10)
         main_layout.addLayout(toolbar)
 
-        self.new_btn = QPushButton("+ New")
-        self.new_btn.setObjectName("clientNewBtn")
+        self.new_btn = PrimeButton("+ New", variant="primary", size="sm")
         self.new_btn.clicked.connect(self.toggle_add)
         toolbar.addWidget(self.new_btn)
 
@@ -728,9 +708,7 @@ class ClientPage(QWidget):
         self.ws_status.setMinimumHeight(36)
         toolbar.addWidget(self.ws_status)
 
-        self.search_edit = QLineEdit()
-        self.search_edit.setObjectName("clientSearchInput")
-        self.search_edit.setPlaceholderText("Search...")
+        self.search_edit = PrimeInput(placeholder_text="Search...")
         self.search_edit.setMaximumWidth(300)
         self.search_edit.textChanged.connect(self._on_search_changed)
         toolbar.addWidget(self.search_edit)
@@ -807,29 +785,6 @@ class ClientPage(QWidget):
                 background: #2f6ff0;
                 color: white;
                 border-color: #5f92ff;
-            }
-            QPushButton#clientNewBtn {
-                background: #3b82f6;
-                border: none;
-                border-radius: 10px;
-                color: white;
-                font-size: 14px;
-                font-weight: 700;
-                padding: 9px 18px;
-            }
-            QPushButton#clientNewBtn:hover { background: #2f6ce3; }
-            QPushButton#clientNewBtn:disabled {
-                background: #374151;
-                color: #9ca3af;
-            }
-            QLineEdit#clientSearchInput {
-                background: #2b2e34;
-                border: 1px solid #3a3e46;
-                border-radius: 10px;
-                color: #f5f7fb;
-                padding: 9px 12px;
-                font-size: 14px;
-                min-height: 24px;
             }
             QLabel#clientWsOnline, QLabel#clientWsOffline {
                 border-radius: 10px;
@@ -997,6 +952,59 @@ class ClientPage(QWidget):
         layout.addWidget(label)
         return wrapper
 
+    def _state_icon_cell(self, state: Optional[bool], icon_name: str, fallback_text: str) -> QWidget:
+        wrapper = QWidget()
+        wrapper.setStyleSheet("background: transparent;")
+        layout = QHBoxLayout(wrapper)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        if state is True:
+            background = "#16a34a"
+            tooltip = "Online"
+        elif state is False:
+            background = "#dc2626"
+            tooltip = "Offline"
+        else:
+            background = "#64748b"
+            tooltip = "Unknown"
+
+        chip = QFrame()
+        chip.setFixedSize(35, 35)
+        chip.setStyleSheet(
+            f"""
+            QFrame {{
+                background: {background};
+                border: none;
+                border-radius: 14px;
+            }}
+            """
+        )
+
+        chip_layout = QHBoxLayout(chip)
+        chip_layout.setContentsMargins(0, 0, 0, 0)
+        chip_layout.setSpacing(0)
+        chip_layout.setAlignment(Qt.AlignCenter)
+
+        icon_label = QLabel()
+        icon_label.setFixedSize(20, 20)
+        icon_label.setStyleSheet("background: transparent; border: none;")
+        icon_file = _icon_path(icon_name)
+        if os.path.isfile(icon_file):
+            icon_label.setPixmap(QIcon(icon_file).pixmap(QSize(20, 20)))
+        else:
+            icon_label.setText(fallback_text)
+            icon_label.setAlignment(Qt.AlignCenter)
+            icon_label.setStyleSheet(
+                "background: transparent; color:#ffffff; font-size:10px; font-weight:800;"
+            )
+        chip_layout.addWidget(icon_label)
+
+        chip.setToolTip(tooltip)
+        layout.addWidget(chip)
+        return wrapper
+
     def _type_cell_widget(self, row: Dict[str, Any]) -> QWidget:
         value = str(row.get("type") or "process").strip().lower()
         if value == "record":
@@ -1021,12 +1029,7 @@ class ClientPage(QWidget):
         return wrapper
 
     def _status_cell_widget(self, row: Dict[str, Any]) -> QWidget:
-        status = row.get("status")
-        if status is True:
-            return self._chip("Online", "#bde9cf", "#125730", "#90d3ad", min_width=86)
-        if status is False:
-            return self._chip("Offline", "#f3dbdb", "#8e1b1b", "#e6b4b4", min_width=86)
-        return self._chip("Unknown", "#d8dee8", "#3f4756", "#b9c2d1", min_width=86)
+        return self._state_icon_cell(row.get("status"), "status.svg", "S")
 
     def _action_button(
         self,
@@ -1034,7 +1037,7 @@ class ClientPage(QWidget):
         bg: str,
         border: str,
         tooltip: str,
-        size: int = 38,
+        size: int = 34,
     ) -> QToolButton:
         btn = QToolButton()
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1044,7 +1047,7 @@ class ClientPage(QWidget):
         icon_file = _icon_path(svg_icon)
         if os.path.isfile(icon_file):
             btn.setIcon(QIcon(icon_file))
-            btn.setIconSize(QSize(18, 18))
+            btn.setIconSize(QSize(max(12, size - 16), max(12, size - 16)))
 
         btn.setStyleSheet(
             f"""
@@ -1072,12 +1075,12 @@ class ClientPage(QWidget):
         layout.setSpacing(8)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        edit_btn = self._action_button("edit.svg", "#3b82f6", "#5d9bff", "Edit Client")
+        edit_btn = self._action_button("edit.svg", "#3578f6", "#4e8cff", "Edit Client")
         edit_btn.clicked.connect(lambda: self.handle_edit(client))
         edit_btn.setEnabled(self.has_permission("edit_client"))
         layout.addWidget(edit_btn)
 
-        delete_btn = self._action_button("trash.svg", "#ef4444", "#ff6d6d", "Delete Client")
+        delete_btn = self._action_button("trash.svg", "#ef4444", "#ff6464", "Delete Client")
         delete_btn.clicked.connect(lambda: self.handle_delete(client))
         delete_btn.setEnabled(self.has_permission("delete_client"))
         layout.addWidget(delete_btn)
@@ -1109,20 +1112,22 @@ class ClientPage(QWidget):
             self._show_error("You do not have permission to delete clients.")
             return
 
-        result = QMessageBox.question(
-            self,
-            "Delete Client",
-            f"Are you sure you want to delete '{client.name}'?",
+        confirmed = PrimeConfirmDialog.ask(
+            parent=self,
+            title="Delete Client",
+            message=f"Are you sure you want to delete '{client.name}'?",
+            ok_text="Delete",
+            cancel_text="Cancel",
         )
-        if result != QMessageBox.StandardButton.Yes:
+        if not confirmed:
             return
         self.client_store.delete_client(client.id)
 
     def _show_info(self, text: str) -> None:
-        QMessageBox.information(self, "Info", text)
+        show_toast_message(self, "info", "Info", text)
 
     def _show_error(self, text: str) -> None:
-        QMessageBox.critical(self, "Error", text)
+        show_toast_message(self, "error", "Error", text)
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)

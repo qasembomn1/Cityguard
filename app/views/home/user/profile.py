@@ -8,18 +8,19 @@ from typing import Optional
 from PySide6.QtCore import QTimer, Qt, Signal,QRectF
 from PySide6.QtGui import QIcon,QColor,QPainter,QPainterPath
 from PySide6.QtWidgets import (
-    QApplication,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QPushButton,
     QScrollArea,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
+
+from app.ui.button import PrimeButton
+from app.ui.input import PrimeInput
 
 from app.models.logs import UserLogResponse
 from app.constants._init_ import Constants
@@ -89,7 +90,8 @@ class ProfilePage(QWidget):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        main_layout.addWidget(scroll)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        main_layout.addWidget(scroll, 1)
 
         content = QWidget()
         content.setObjectName("profileContent")
@@ -117,7 +119,6 @@ class ProfilePage(QWidget):
         content_layout.addLayout(top_grid)
 
         content_layout.addWidget(self._build_activity_card())
-        content_layout.addStretch(1)
 
         self._apply_theme()
         self._sync_edit_state()
@@ -214,8 +215,7 @@ class ProfilePage(QWidget):
 
         header_layout.addLayout(title_col, 1)
 
-        self.edit_button = QPushButton("Edit")
-        self.edit_button.setObjectName("secondaryButton")
+        self.edit_button = PrimeButton("Edit", variant="secondary", mode="outline", size="sm", width=80)
         self.edit_button.clicked.connect(self._toggle_editing)
         header_layout.addWidget(self.edit_button, 0, Qt.AlignRight)
 
@@ -245,8 +245,7 @@ class ProfilePage(QWidget):
         footer.setContentsMargins(0, 8, 0, 0)
         footer.addStretch(1)
 
-        self.save_button = QPushButton("Save Changes")
-        self.save_button.setObjectName("primaryButton")
+        self.save_button = PrimeButton("Save Changes", variant="primary", mode="filled", size="sm", width=120)
         self.save_button.clicked.connect(self._save_profile)
         footer.addWidget(self.save_button)
         body_layout.addLayout(footer)
@@ -309,8 +308,7 @@ class ProfilePage(QWidget):
         footer.setContentsMargins(0, 6, 0, 0)
         footer.addStretch(1)
 
-        self.password_button = QPushButton("Update Password")
-        self.password_button.setObjectName("primaryButton")
+        self.password_button = PrimeButton("Update Password", variant="primary", mode="filled", size="sm", width=140)
         self.password_button.clicked.connect(self._change_password)
         footer.addWidget(self.password_button)
         body_layout.addLayout(footer)
@@ -378,9 +376,7 @@ class ProfilePage(QWidget):
         label.setObjectName("fieldLabel")
         layout.addWidget(label)
 
-        input_widget = QLineEdit()
-        input_widget.setObjectName("profileInput")
-        input_widget.setPlaceholderText(f"Enter {label_text.lower()}")
+        input_widget = PrimeInput(placeholder_text=f"Enter {label_text.lower()}")
         if key == "username":
             input_widget.setReadOnly(True)
         setattr(self, f"{key}_input", input_widget)
@@ -398,10 +394,8 @@ class ProfilePage(QWidget):
         label.setObjectName("fieldLabel")
         layout.addWidget(label)
 
-        input_widget = QLineEdit()
-        input_widget.setObjectName("profileInput")
+        input_widget = PrimeInput(placeholder_text=f"Enter {label_text.lower()}")
         input_widget.setEchoMode(QLineEdit.EchoMode.Password)
-        input_widget.setPlaceholderText(f"Enter {label_text.lower()}")
         setattr(self, f"{key}_input", input_widget)
         layout.addWidget(input_widget)
         return wrapper
@@ -710,54 +704,6 @@ class ProfilePage(QWidget):
                 color: #e2e8f0;
                 font-size: 14px;
                 font-weight: 700;
-            }}
-            QLineEdit#profileInput {{
-                background: #101722;
-                border: 1px solid #2f3b4d;
-                border-radius: 12px;
-                padding: 12px 14px;
-                color: #f8fafc;
-                font-size: 13px;
-                selection-background-color: #2563eb;
-                min-height: 20px;
-            }}
-            QLineEdit#profileInput:focus {{
-                border: 1px solid #3b82f6;
-            }}
-            QLineEdit#profileInput:read-only {{
-                background: #0d141d;
-                border: 1px solid #243041;
-                color: #93a1b6;
-            }}
-            QPushButton#primaryButton,
-            QPushButton#secondaryButton {{
-                border-radius: 12px;
-                padding: 10px 16px;
-                font-size: 13px;
-                font-weight: 700;
-                min-height: 18px;
-            }}
-            QPushButton#primaryButton {{
-                background: #2563eb;
-                color: white;
-                border: 1px solid #2563eb;
-            }}
-            QPushButton#primaryButton:hover:!disabled {{
-                background: #1d4ed8;
-                border: 1px solid #1d4ed8;
-            }}
-            QPushButton#primaryButton:disabled {{
-                background: #1c2431;
-                color: #66758d;
-                border: 1px solid #263142;
-            }}
-            QPushButton#secondaryButton {{
-                background: rgba(148, 163, 184, 0.08);
-                color: #e2e8f0;
-                border: 1px solid rgba(148, 163, 184, 0.18);
-            }}
-            QPushButton#secondaryButton:hover {{
-                background: rgba(148, 163, 184, 0.14);
             }}
             QFrame#infoNote {{
                 background: rgba(245, 158, 11, 0.08);

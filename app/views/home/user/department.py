@@ -4,20 +4,14 @@ import os
 import sys
 from typing import Any, Dict, List, Optional
 
-from PySide6.QtCore import Qt, Signal,QRectF
+from PySide6.QtCore import QSize, Qt, Signal,QRectF
 from PySide6.QtGui import QIcon,QColor,QPainter,QPainterPath
 from app.constants._init_ import Constants
 from PySide6.QtWidgets import (
-    QApplication,
-    QDialog,
-    QFormLayout,
     QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QMainWindow,
-    QMessageBox,
-    QPushButton,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -29,8 +23,13 @@ from app.services.home.devices.camera_service import CameraService
 from app.services.home.user.department_service import DepartmentService
 from app.store.auth import AuthStore
 from app.store.home.user.department_store import DepartmentCrudStore, DepartmentStore as CameraDepartmentStore
+from app.ui.button import PrimeButton
+from app.ui.confirm_dialog import PrimeConfirmDialog
+from app.ui.dialog import PrimeDialog
+from app.ui.input import PrimeInput
 from app.ui.multiselect import PrimeMultiSelect
 from app.ui.table import PrimeDataTable, PrimeTableColumn
+from app.ui.toast import show_toast_message
 from app.views.home.user._shared import USER_MANAGEMENT_SIDEBAR_STYLES, UserManagementSidebar
 
 
@@ -43,7 +42,7 @@ def _icon_path(name: str) -> str:
     return os.path.join(_ICONS_DIR, name)
 
 
-class DepartmentDialog(QDialog):
+class DepartmentDialog(PrimeDialog):
     submitted = Signal(dict, bool)
 
     def __init__(
@@ -53,97 +52,66 @@ class DepartmentDialog(QDialog):
         cameras_enabled: bool = True,
         parent: Optional[QWidget] = None,
     ) -> None:
-        super().__init__(parent)
+        title = "Edit Department" if department is not None else "Add Department"
+        super().__init__(
+            title=title,
+            parent=parent,
+            width=520,
+            height=320,
+            ok_text="Save",
+            cancel_text="Cancel",
+        )
         self.department = department
         self.is_edit_mode = department is not None
         self._camera_options = list(camera_options)
         self._cameras_enabled = cameras_enabled
 
-        self.setWindowTitle("Department")
-        self.resize(520, 280)
+        # ── form content ──
+        container = QWidget()
+        container_layout = QVBoxLayout(container)
+        container_layout.setContentsMargins(0, 0, 0, 0)
+        container_layout.setSpacing(12)
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(18, 18, 18, 18)
-        root.setSpacing(14)
+        name_label = QLabel("Name *")
+        name_label.setStyleSheet("color: #d8e1ee; font-size: 12px; font-weight: 700;")
+        container_layout.addWidget(name_label)
 
-        form = QFormLayout()
-        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
-        form.setFormAlignment(Qt.AlignmentFlag.AlignTop)
-        form.setSpacing(12)
+        self.name_edit = PrimeInput(placeholder_text="Department Name")
+        container_layout.addWidget(self.name_edit)
 
-        self.name_edit = QLineEdit()
+        cam_label = QLabel("Cameras")
+        cam_label.setStyleSheet("color: #d8e1ee; font-size: 12px; font-weight: 700;")
+        container_layout.addWidget(cam_label)
+
         self.camera_select = PrimeMultiSelect(
             options=self._camera_options,
             placeholder="Select Cameras",
         )
         self.camera_select.setEnabled(cameras_enabled)
-
-        form.addRow("Name *", self.name_edit)
-        form.addRow("Cameras", self.camera_select)
-        root.addLayout(form)
+        container_layout.addWidget(self.camera_select)
 
         helper = QLabel(
             "Camera assignment requires camera view permission."
             if not cameras_enabled
             else "Assign one or more cameras to this department."
         )
-        helper.setObjectName("departmentDialogHint")
         helper.setWordWrap(True)
-        root.addWidget(helper)
+        helper.setStyleSheet("color: #93a1b6; font-size: 12px;")
+        container_layout.addWidget(helper)
 
-        controls = QHBoxLayout()
-        controls.addStretch(1)
+        self.set_content(container)
 
-        reset_btn = QPushButton("Reset")
+        # ── footer: add Reset before Cancel ──
+        reset_btn = PrimeButton("Reset", variant="secondary", mode="outline", size="sm", width=80)
         reset_btn.clicked.connect(self._reset)
-        controls.addWidget(reset_btn)
+        self.footer_widget.layout().insertWidget(1, reset_btn)
 
-        cancel_btn = QPushButton("Cancel")
-        cancel_btn.clicked.connect(self.reject)
-        controls.addWidget(cancel_btn)
+        # ── redirect ok → _submit ──
+        self.ok_button.clicked.disconnect()
+        self.ok_button.clicked.connect(self._submit)
 
-        save_btn = QPushButton("Save")
-        save_btn.clicked.connect(self._submit)
-        controls.addWidget(save_btn)
-        root.addLayout(controls)
-
-        self._apply_style()
         if self.department is not None:
             self._fill(self.department)
-
-    def _apply_style(self) -> None:
-        self.setStyleSheet(
-            """
-            QDialog {
-                background: #171a1f;
-                color: #f1f5f9;
-            }
-            QLineEdit {
-                background: #232831;
-                border: 1px solid #3a424f;
-                border-radius: 8px;
-                color: #f8fafc;
-                padding: 6px 8px;
-                min-height: 24px;
-            }
-            QPushButton {
-                background: #2b3340;
-                border: 1px solid #425062;
-                border-radius: 8px;
-                color: #f8fafc;
-                padding: 7px 14px;
-                font-weight: 600;
-            }
-            QPushButton:hover {
-                background: #35507f;
-                border-color: #4d76bb;
-            }
-            QLabel#departmentDialogHint {
-                color: #93a1b6;
-                font-size: 12px;
-            }
-            """
-        )
 
     def _fill(self, department: DepartmentResponse) -> None:
         self.name_edit.setText(department.name)
@@ -160,7 +128,7 @@ class DepartmentDialog(QDialog):
     def _submit(self) -> None:
         name = self.name_edit.text().strip()
         if not name:
-            QMessageBox.warning(self, "Missing", "Department name is required.")
+            show_toast_message(self, "warn", "Missing", "Department name is required.")
             return
 
         payload = {
@@ -223,8 +191,7 @@ class DepartmentPage(QWidget):
         toolbar.setSpacing(10)
         main_layout.addLayout(toolbar)
 
-        self.new_btn = QPushButton("+ New")
-        self.new_btn.setObjectName("departmentNewBtn")
+        self.new_btn = PrimeButton("+ New", variant="primary", mode="filled", size="sm", width=90)
         self.new_btn.clicked.connect(self.open_create_dialog)
         toolbar.addWidget(self.new_btn)
 
@@ -258,18 +225,7 @@ class DepartmentPage(QWidget):
             QWidget {
                 color: #f5f7fb;
             }
-            QPushButton#departmentNewBtn {
-                background: #3b82f6;
-                border: none;
-                border-radius: 10px;
-                color: white;
-                font-size: 14px;
-                font-weight: 700;
-                padding: 9px 18px;
-            }
-            QPushButton#departmentNewBtn:hover {
-                background: #2f6ce3;
-            }
+
             QLineEdit#departmentSearchInput {
                 background: #2b2e34;
                 border: 1px solid #3a3e46;
@@ -403,6 +359,34 @@ class DepartmentPage(QWidget):
         layout.addStretch(1)
         return wrapper
 
+    def _action_button(self, icon_name: str, tooltip: str, bg: str, border: str, size: int = 34) -> QToolButton:
+        btn = QToolButton()
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setFixedSize(size, size)
+        btn.setToolTip(tooltip)
+        btn.setStyleSheet(
+            f"""
+            QToolButton {{
+                background: {bg};
+                border: 1px solid {border};
+                border-radius: {size // 2}px;
+            }}
+            QToolButton:hover {{
+                border-color: #f8fafc;
+            }}
+            QToolButton:disabled {{
+                background: #2b2d33;
+                border-color: #3b3f47;
+            }}
+            """
+        )
+        icon_file = _icon_path(icon_name)
+        if os.path.isfile(icon_file):
+            icon_px = max(12, size - 16)
+            btn.setIcon(QIcon(icon_file))
+            btn.setIconSize(QSize(icon_px, icon_px))
+        return btn
+
     def _action_widget(self, row: Dict[str, Any]) -> QWidget:
         department = row.get("_department")
         wrapper = QWidget()
@@ -411,25 +395,14 @@ class DepartmentPage(QWidget):
         layout.setSpacing(8)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        edit_btn = QToolButton()
-        edit_btn.setObjectName("departmentIconBtn")
-        edit_btn.setToolTip("Edit department")
-        edit_icon = QIcon(_icon_path("edit.svg"))
-        if not edit_icon.isNull():
-            edit_btn.setIcon(edit_icon)
-        else:
-            edit_btn.setText("E")
+        if not isinstance(department, DepartmentResponse):
+            return wrapper
+
+        edit_btn = self._action_button("edit.svg", "Edit department", "#3578f6", "#4e8cff")
         edit_btn.clicked.connect(lambda: self._open_dialog(department))
         layout.addWidget(edit_btn)
 
-        delete_btn = QToolButton()
-        delete_btn.setObjectName("departmentDeleteBtn")
-        delete_btn.setToolTip("Delete department")
-        delete_icon = QIcon(_icon_path("trash.svg"))
-        if not delete_icon.isNull():
-            delete_btn.setIcon(delete_icon)
-        else:
-            delete_btn.setText("D")
+        delete_btn = self._action_button("trash.svg", "Delete department", "#ef4444", "#ff6464")
         delete_btn.clicked.connect(lambda: self._confirm_delete(department))
         layout.addWidget(delete_btn)
         return wrapper
@@ -437,21 +410,22 @@ class DepartmentPage(QWidget):
     def _confirm_delete(self, department: Any) -> None:
         if not isinstance(department, DepartmentResponse):
             return
-        result = QMessageBox.question(
-            self,
-            "Delete Record",
-            f"Are you sure to delete '{department.name}'?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        confirmed = PrimeConfirmDialog.ask(
+            parent=self,
+            title="Delete Department",
+            message=f"Are you sure you want to delete '{department.name}'? This action cannot be undone.",
+            ok_text="Delete",
+            cancel_text="Cancel",
         )
-        if result != QMessageBox.StandardButton.Yes:
+        if not confirmed:
             return
         self.department_store.delete_department(department.id)
 
     def _show_info(self, text: str) -> None:
-        QMessageBox.information(self, "Info", text)
+        show_toast_message(self, "info", "Info", text)
 
     def _show_error(self, text: str) -> None:
-        QMessageBox.critical(self, "Error", text)
+        show_toast_message(self, "error", "Error", text)
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -459,5 +433,3 @@ class DepartmentPage(QWidget):
         path.addRect(QRectF(self.rect()))
         p.fillPath(path, QColor(Constants.DARK_BG))   # dark bg — cards float above it
         super().paintEvent(event)
-
-

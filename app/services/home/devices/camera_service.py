@@ -271,6 +271,42 @@ class CameraService:
         self.list_cameras(None)
         return self.get_camera(camera_id)
 
+    def scan_network(self) -> List[Dict[str, Any]]:
+        response = _api_request_json(
+            "/api/v1/cameras/scan_cameras",
+            method="GET",
+            auth=True,
+        )
+        raw_items = extract_dict_list(response, keys=("items", "data", "results", "cameras"))
+        normalized: List[Dict[str, Any]] = []
+        for item in raw_items:
+            ip_address = str(
+                item.get("camera_ip") or item.get("ip_address") or item.get("ip") or item.get("host") or ""
+            ).strip()
+            port_value = item.get("camera_port") or item.get("port")
+            try:
+                port = int(port_value)
+            except (TypeError, ValueError):
+                port = 80
+            manufacturer = str(
+                item.get("manufacturer") or item.get("brand") or item.get("camera_type")
+                or item.get("title") or item.get("name") or "Unknown"
+            ).strip() or "Unknown"
+            username = str(item.get("camera_username") or item.get("username") or "").strip()
+            password = str(item.get("camera_password") or item.get("password") or "")
+            display_name = str(item.get("name") or "").strip()
+            if not display_name:
+                display_name = manufacturer if manufacturer.lower() != "unknown" else f"Camera {ip_address}"
+            normalized.append({
+                "ip_address": ip_address,
+                "port": max(1, min(port, 65535)),
+                "manufacturer": manufacturer,
+                "username": username,
+                "password": password,
+                "name": display_name,
+            })
+        return normalized
+
     def get_camera_frame(self, camera_id: int) -> str:
         response = _api_request_json(
             "/api/v1/camera/camera_test",

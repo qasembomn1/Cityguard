@@ -1,5 +1,5 @@
 from PySide6.QtWidgets import QPushButton, QSizePolicy
-from PySide6.QtCore import Qt, QVariantAnimation, QEasingCurve, QSize
+from PySide6.QtCore import Qt, QVariantAnimation, QEasingCurve, QSize, QTimer
 from PySide6.QtGui import QColor
 
 
@@ -123,6 +123,12 @@ class PrimeButton(QPushButton):
         self._border_anim.setEasingCurve(QEasingCurve.OutCubic)
         self._border_anim.valueChanged.connect(self._on_border_animate)
 
+        self._loading = False
+        self._original_text = ""
+        self._loading_frame = 0
+        self._loading_timer = QTimer(self)
+        self._loading_timer.timeout.connect(self._on_loading_tick)
+
         self._set_idle_colors()
         self._update_style()
 
@@ -230,11 +236,12 @@ class PrimeButton(QPushButton):
 
     def _update_style(self):
         border_width = 1 if self._current_border.alpha() > 0 else 0
+        border_rgba = f"rgba({self._current_border.red()}, {self._current_border.green()}, {self._current_border.blue()}, {self._current_border.alpha()})"
         self.setStyleSheet(f"""
             QPushButton {{
                 background-color: rgba({self._current_bg.red()}, {self._current_bg.green()}, {self._current_bg.blue()}, {self._current_bg.alpha()});
                 color: rgba({self._current_text.red()}, {self._current_text.green()}, {self._current_text.blue()}, {self._current_text.alpha()});
-                border: none;
+                border: {border_width}px solid {border_rgba};
                 border-radius: {self._radius}px;
                 padding-left: {self._padding_x}px;
                 padding-right: {self._padding_x}px;
@@ -249,6 +256,26 @@ class PrimeButton(QPushButton):
                 border: 1px solid rgba(148, 163, 184, 60);
             }}
         """)
+
+    def set_loading(self, loading: bool) -> None:
+        if self._loading == loading:
+            return
+        self._loading = loading
+        if loading:
+            self._original_text = self.text()
+            self._loading_frame = 0
+            self._on_loading_tick()
+            self._loading_timer.start(400)
+            self.setEnabled(False)
+        else:
+            self._loading_timer.stop()
+            self.setText(self._original_text)
+            self.setEnabled(True)
+
+    def _on_loading_tick(self) -> None:
+        dots = ["·", "··", "···"]
+        self._loading_frame = (self._loading_frame + 1) % 3
+        self.setText(f"{self._original_text} {dots[self._loading_frame]}")
 
     def enterEvent(self, event):
         if self.isEnabled():

@@ -265,12 +265,13 @@ class PrimeSelect(QWidget):
     selection_changed = Signal(object)
     value_changed = Signal(object)
 
-    def __init__(self, options=None, placeholder="Select", parent=None):
+    def __init__(self, options=None, placeholder="Select", max_popup_height=200, parent=None):
         super().__init__(parent)
         self.setObjectName("primeSelect")
         self.options = list(options or [])
         self.selected_value = None
         self.placeholder = placeholder
+        self.max_popup_height = max_popup_height
 
         self.setMinimumWidth(180)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -383,6 +384,8 @@ class PrimeSelect(QWidget):
         screen_rect = self._popup_screen_geometry()
         popup_width = self.button.width() or self.width() or 180
         popup_height = self.popup.preferred_height()
+        if self.max_popup_height is not None:
+            popup_height = min(popup_height, self.max_popup_height)
         if screen_rect is not None:
             popup_width = min(popup_width, screen_rect.width())
             popup_height = min(popup_height, screen_rect.height())

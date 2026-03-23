@@ -5,19 +5,17 @@ import os
 from datetime import datetime
 from typing import Dict, List, Optional
 
-from PySide6.QtCore import QDateTime, QSize, Qt, Signal,QRectF
-from PySide6.QtGui import QIcon,QColor,QPainter,QPainterPath
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, Signal, QRectF
+from PySide6.QtGui import QColor,QPainter,QPainterPath
 from app.constants._init_ import Constants
 from PySide6.QtWidgets import (
     QFileDialog,
-    QDateTimeEdit,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QScrollArea,
     QSizePolicy,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -34,60 +32,8 @@ from app.ui.multiselect import PrimeMultiSelect
 from app.ui.select import PrimeSelect
 from app.ui.table import PrimeDataTable, PrimeTableColumn
 from app.ui.toast import PrimeToastHost
-
-
-_ICONS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../resources/icons"))
-
-
-def _icon_path(name: str) -> str:
-    return os.path.join(_ICONS_DIR, name)
-
-
-class ReportDateTimeField(QFrame):
-    def __init__(self, placeholder: str, parent: Optional[QWidget] = None) -> None:
-        super().__init__(parent)
-        self.setObjectName("reportDateField")
-
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(1, 1, 1, 1)
-        layout.setSpacing(0)
-
-        self.edit = QDateTimeEdit()
-        self.edit.setCalendarPopup(True)
-        self.edit.setDisplayFormat("yyyy-MM-dd hh:mm AP")
-        self.edit.setSpecialValueText(placeholder)
-        self.edit.setDateTime(QDateTime.currentDateTime())
-        self.edit.setMinimumDateTime(QDateTime.fromSecsSinceEpoch(0))
-        self.edit.setObjectName("reportDateEdit")
-        self.edit.dateTimeChanged.connect(self._mark_has_value)
-        layout.addWidget(self.edit, 1)
-
-        clear_btn = QToolButton()
-        clear_btn.setObjectName("reportDateClear")
-        clear_btn.setIcon(QIcon(_icon_path("close.svg")))
-        clear_btn.setIconSize(QSize(14, 14))
-        clear_btn.setToolTip("Clear")
-        clear_btn.clicked.connect(self.clear)
-        layout.addWidget(clear_btn)
-
-        self._has_value = False
-        self.clear()
-
-    def value(self) -> Optional[datetime]:
-        if not self._has_value:
-            return None
-        return self.edit.dateTime().toPython()
-
-    def clear(self) -> None:
-        self.edit.blockSignals(True)
-        self._has_value = False
-        self.edit.setDateTime(QDateTime.currentDateTime())
-        self.edit.blockSignals(False)
-        self.edit.setStyleSheet("color: #93a1b6;")
-
-    def _mark_has_value(self, _value: QDateTime) -> None:
-        self._has_value = True
-        self.edit.setStyleSheet("")
+from app.views.report_shared import REPORT_SIDEBAR_STYLES, ReportSidebar
+from app.views.lpr.search import ClearableDateTimeField, FilterAccordionSection
 
 
 class SummaryCard(QFrame):
@@ -123,6 +69,8 @@ class LprReportPage(QWidget):
         self.report_store = LprReportStore(LprReportService())
 
         self._loaded_department_id: Optional[int] = None
+        self.filters_window_visible = False
+        self._filters_slide_animation: Optional[QPropertyAnimation] = None
         self.has_searched = False
 
         self.auth_store.changed.connect(self.refresh)
@@ -140,13 +88,32 @@ class LprReportPage(QWidget):
         self.refresh()
 
     def _build_ui(self) -> None:
-        root = QVBoxLayout(self)
+        root = QHBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8)
-        root.setSpacing(8)
+        root.setSpacing(10)
+        self._root_layout = root
+
+        self.sidebar = ReportSidebar("/report/lpr", self)
+        self.sidebar.navigate.connect(self.navigate.emit)
+        root.addWidget(self.sidebar, 0)
+
+        self.filters_panel = QFrame()
+        self.filters_panel.setObjectName("filtersPanel")
+        self.filters_panel.setMinimumWidth(0)
+        self.filters_panel.setMaximumWidth(0 if not self.filters_window_visible else 16777215)
+        self.filters_panel.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        filters_layout = QVBoxLayout(self.filters_panel)
+        filters_layout.setContentsMargins(0, 0, 0, 0)
+        filters_layout.setSpacing(0)
+        self.filters_panel.setVisible(self.filters_window_visible)
+        root.addWidget(self.filters_panel, 0)
 
         self.content_panel = QFrame()
         self.content_panel.setObjectName("reportContentPanel")
         root.addWidget(self.content_panel, 1)
+        root.setStretch(0, 0)
+        root.setStretch(1, 1)
+        root.setStretch(2, 4)
 
         content = QVBoxLayout(self.content_panel)
         content.setContentsMargins(18, 18, 18, 18)
@@ -157,30 +124,33 @@ class LprReportPage(QWidget):
         hero_scroll.setWidgetResizable(True)
         hero_scroll.setFrameShape(QFrame.Shape.NoFrame)
         hero_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        hero_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        hero_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
-        hero_scroll.setMaximumHeight(360)
-        content.addWidget(hero_scroll)
+        hero_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        hero_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        filters_layout.addWidget(hero_scroll, 1)
+        self.hero_scroll = hero_scroll
 
         hero_frame = QFrame()
         hero_frame.setObjectName("reportHero")
+        hero_frame.setMinimumWidth(0)
         hero = QVBoxLayout(hero_frame)
         hero.setContentsMargins(18, 18, 18, 18)
         hero.setSpacing(14)
+        self.hero_frame = hero_frame
         hero_scroll.setWidget(hero_frame)
 
-        hero_head = QHBoxLayout()
+        hero_head = QVBoxLayout()
         hero_head.setContentsMargins(0, 0, 0, 0)
-        hero_head.setSpacing(8)
+        hero_head.setSpacing(6)
         hero.addLayout(hero_head)
 
         hero_text = QVBoxLayout()
         hero_text.setContentsMargins(0, 0, 0, 0)
         hero_text.setSpacing(4)
-        hero_head.addLayout(hero_text, 1)
+        hero_head.addLayout(hero_text)
 
         hero_title = QLabel("LPR Report")
         hero_title.setObjectName("heroTitle")
+        hero_title.setWordWrap(True)
         hero_text.addWidget(hero_title)
 
         hero_hint = QLabel(
@@ -191,17 +161,9 @@ class LprReportPage(QWidget):
         hero_hint.setWordWrap(True)
         hero_text.addWidget(hero_hint)
 
-        self.filter_state_chip = QLabel("Ready")
+        self.filter_state_chip = QLabel("Report builder")
         self.filter_state_chip.setObjectName("heroChip")
-        hero_head.addWidget(self.filter_state_chip, 0, Qt.AlignmentFlag.AlignTop)
-
-        fields_grid = QGridLayout()
-        fields_grid.setContentsMargins(0, 0, 0, 0)
-        fields_grid.setHorizontalSpacing(12)
-        fields_grid.setVerticalSpacing(12)
-        fields_grid.setColumnStretch(0, 1)
-        fields_grid.setColumnStretch(1, 1)
-        hero.addLayout(fields_grid)
+        hero_head.addWidget(self.filter_state_chip, 0, Qt.AlignmentFlag.AlignLeft)
 
         self.report_type_select = PrimeSelect(placeholder="Select report type")
         self.report_type_select.set_options(
@@ -211,69 +173,85 @@ class LprReportPage(QWidget):
             ]
         )
         self.report_type_select.set_value("lpr")
-        fields_grid.addWidget(
-            self._hero_field_block(
-                "Report Type",
-                self.report_type_select,
-                "Choose either `lpr` or `monthly` for the API payload.",
-            ),
-            0,
-            0,
-        )
+        self._allow_horizontal_shrink(self.report_type_select)
 
         self.camera_select = PrimeMultiSelect(options=[], placeholder="Select Camera")
-        self.camera_select.setMinimumWidth(0)
-        self.camera_select.setMaximumWidth(16777215)
-        self.camera_select.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        fields_grid.addWidget(
-            self._hero_field_block(
-                "Camera",
-                self.camera_select,
-                "Leave empty to report across all cameras available to the current department.",
-            ),
-            0,
-            1,
-        )
+        self._allow_horizontal_shrink(self.camera_select)
 
-        self.date_from_field = ReportDateTimeField("Start Time")
-        fields_grid.addWidget(
+        self.date_from_field = ClearableDateTimeField("Start Time")
+        self.date_to_field = ClearableDateTimeField("End Time")
+        self._allow_horizontal_shrink(self.date_from_field)
+        self._allow_horizontal_shrink(self.date_to_field)
+
+        time_band = FilterAccordionSection(
+            "Time Range",
+            "These date pickers control which report records are included.",
+            expanded=True,
+            collapsible=False,
+        )
+        time_layout = QGridLayout()
+        time_layout.setContentsMargins(0, 0, 0, 0)
+        time_layout.setHorizontalSpacing(12)
+        time_layout.setVerticalSpacing(10)
+        time_layout.setColumnStretch(0, 1)
+        time_band.body_layout.addLayout(time_layout)
+        time_layout.addWidget(
             self._hero_field_block(
                 "Start Date & Time",
                 self.date_from_field,
                 "Required field for the report request.",
             ),
-            1,
+            0,
             0,
         )
-
-        self.date_to_field = ReportDateTimeField("End Time")
-        fields_grid.addWidget(
+        time_layout.addWidget(
             self._hero_field_block(
                 "End Date & Time",
                 self.date_to_field,
                 "Required field for the report request.",
             ),
             1,
-            1,
+            0,
         )
+        hero.addWidget(time_band)
 
-        hero_actions = QHBoxLayout()
+        setup_band = FilterAccordionSection(
+            "Report Setup",
+            "Choose the report format before running the request.",
+            expanded=True,
+            collapsible=False,
+        )
+        setup_band.body_layout.addWidget(self._field_block("Report Type", self.report_type_select))
+        hero.addWidget(setup_band)
+
+        source_band = FilterAccordionSection(
+            "Source",
+            "Leave the camera list empty to include every available camera.",
+            expanded=True,
+            collapsible=False,
+        )
+        source_band.body_layout.addWidget(self._field_block("Camera", self.camera_select))
+        hero.addWidget(source_band)
+
+        hero_actions = QVBoxLayout()
         hero_actions.setContentsMargins(0, 0, 0, 0)
-        hero_actions.setSpacing(10)
+        hero_actions.setSpacing(8)
         hero.addLayout(hero_actions)
 
-        self.reset_btn = PrimeButton("Reset", variant="secondary", size="sm")
+        self.reset_btn = PrimeButton("Reset Filters", variant="secondary", mode="outline", size="sm")
         self.reset_btn.clicked.connect(self.reset_filters)
         hero_actions.addWidget(self.reset_btn)
 
-        self.export_btn = PrimeButton("Export CSV", variant="info", size="sm")
+        self.export_btn = PrimeButton("Export CSV", variant="secondary", mode="outline", size="sm")
         self.export_btn.clicked.connect(self.export_csv)
         hero_actions.addWidget(self.export_btn)
 
-        self.search_btn = PrimeButton("Run Report", variant="primary", size="sm")
+        self.search_btn = PrimeButton("Run Report", variant="primary", mode="filled", size="sm")
         self.search_btn.clicked.connect(self.perform_report)
         hero_actions.addWidget(self.search_btn)
-        hero_actions.addStretch(1)
+        self._allow_horizontal_shrink(self.reset_btn)
+        self._allow_horizontal_shrink(self.export_btn)
+        self._allow_horizontal_shrink(self.search_btn)
 
         summary_frame = QFrame()
         summary_frame.setObjectName("reportSummaryWrap")
@@ -321,6 +299,15 @@ class LprReportPage(QWidget):
         title_col.addWidget(self.status_label)
         toolbar.addLayout(title_col, 1)
 
+        self.results_filter_btn = PrimeButton(
+            "Hide Sidebar" if self.filters_window_visible else "Show Sidebar",
+            variant="secondary",
+            mode="outline",
+            size="sm",
+        )
+        self.results_filter_btn.clicked.connect(self.toggle_filters_window)
+        toolbar.addWidget(self.results_filter_btn)
+
         self.table = PrimeDataTable(page_size=20, page_size_options=[10, 20, 50, 100], row_height=48, show_footer=True)
         self.table.set_columns(
             [
@@ -334,6 +321,7 @@ class LprReportPage(QWidget):
             ]
         )
         content.addWidget(self.table, 1)
+        self._sync_filters_window_ui()
 
     def _hero_field_block(self, label_text: str, field: QWidget, hint_text: str) -> QWidget:
         wrapper = QWidget()
@@ -345,92 +333,257 @@ class LprReportPage(QWidget):
         label = QLabel(label_text)
         label.setObjectName("heroFieldLabel")
         layout.addWidget(label)
-        layout.addWidget(field)
 
         hint = QLabel(hint_text)
         hint.setObjectName("heroFieldHint")
         hint.setWordWrap(True)
         layout.addWidget(hint)
+
+        layout.addWidget(field)
         return wrapper
+
+    def _field_block(self, label_text: str, field: QWidget) -> QWidget:
+        wrapper = QWidget()
+        wrapper.setObjectName("fieldBlock")
+        layout = QVBoxLayout(wrapper)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        label = QLabel(label_text)
+        label.setObjectName("fieldLabel")
+        layout.addWidget(label)
+        layout.addWidget(field)
+        return wrapper
+
+    def _allow_horizontal_shrink(self, widget: QWidget) -> None:
+        widget.setMinimumWidth(0)
+        policy = widget.sizePolicy()
+        if policy.horizontalPolicy() == QSizePolicy.Policy.Fixed:
+            policy.setHorizontalPolicy(QSizePolicy.Policy.Preferred)
+        else:
+            policy.setHorizontalPolicy(QSizePolicy.Policy.Expanding)
+        widget.setSizePolicy(policy)
 
     def _apply_style(self) -> None:
         self.setStyleSheet(
-            """
+            REPORT_SIDEBAR_STYLES
+            + """
             QWidget {
-                color: #eef2f8;
+                color: #e2e8f0;
+                font-size: 13px;
+            }
+            QFrame#filtersPanel {
+                background: transparent;
+                border: none;
             }
             QFrame#reportContentPanel {
-                background: #171b21;
-                border: 1px solid #2b3340;
-                border-radius: 16px;
+                background: #171b22;
+                border: 1px solid #2b3240;
+                border-radius: 18px;
             }
             QFrame#reportHero {
-                background: #151920;
-                border: 1px solid #2a3140;
-                border-radius: 16px;
+                background: #171b22;
+                border: 1px solid #2b3240;
+                border-radius: 22px;
+            }
+            QFrame#filterAccordion {
+                background: #1f2630;
+                border: 1px solid #2e3746;
+                border-radius: 18px;
+            }
+            QPushButton#filterAccordionHeader {
+                background: transparent;
+                border: none;
+                color: #e2e8f0;
+                font-size: 14px;
+                font-weight: 800;
+                padding: 14px 16px;
+                text-align: left;
+            }
+            QPushButton#filterAccordionHeader:hover {
+                background: rgba(148, 163, 184, 0.08);
+            }
+            QPushButton#filterAccordionHeader:disabled {
+                color: #64748b;
+            }
+            QFrame#filterAccordionBody {
+                background: transparent;
+                border-top: 1px solid rgba(71, 85, 105, 0.55);
+            }
+            QLabel#filterAccordionHint {
+                color: #94a3b8;
+                font-size: 11px;
             }
             QFrame#reportToolbar,
             QFrame#reportSummaryWrap {
-                background: #151920;
-                border: 1px solid #2a3140;
-                border-radius: 14px;
+                background: #1f2630;
+                border: 1px solid #2e3746;
+                border-radius: 16px;
             }
             QLabel#heroTitle {
                 color: #f8fafc;
-                font-size: 22px;
-                font-weight: 700;
+                font-size: 28px;
+                font-weight: 900;
             }
-            QLabel#heroHint,
-            QLabel#pageSummary {
-                color: #93a1b6;
+            QLabel#heroHint {
+                color: #94a3b8;
                 font-size: 13px;
             }
             QLabel#heroChip {
-                padding: 6px 12px;
-                border-radius: 999px;
-                background: rgba(59, 130, 246, 0.18);
-                border: 1px solid rgba(96, 165, 250, 0.35);
-                color: #dbeafe;
+                background: rgba(148, 163, 184, 0.14);
+                border: 1px solid rgba(148, 163, 184, 0.32);
+                border-radius: 12px;
+                color: #e2e8f0;
                 font-size: 11px;
-                font-weight: 700;
+                font-weight: 800;
+                padding: 6px 10px;
             }
             QLabel#pageTitle {
                 color: #f8fafc;
-                font-size: 20px;
-                font-weight: 700;
+                font-size: 22px;
+                font-weight: 800;
             }
-            QLabel#heroFieldLabel {
-                color: #dbe3ef;
+            QLabel#pageSummary {
+                color: #94a3b8;
+                font-size: 12px;
+            }
+            QLabel#fieldLabel {
+                color: #cbd5e1;
                 font-size: 12px;
                 font-weight: 700;
             }
+            QLabel#heroFieldLabel {
+                color: #cbd5e1;
+                font-size: 12px;
+                font-weight: 800;
+            }
             QLabel#heroFieldHint {
-                color: #93a1b6;
+                color: #94a3b8;
                 font-size: 11px;
             }
+            QWidget#fieldBlock,
             QWidget#heroFieldBlock {
-                background: #11161d;
-                border: 1px solid #293241;
-                border-radius: 14px;
-                padding: 2px;
+                background: transparent;
             }
-            QFrame#reportDateField {
-                background: #242a33;
-                border: 1px solid #364150;
+            QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QDateTimeEdit, QTimeEdit {
+                background: #232a34;
+                border: 1px solid #364152;
                 border-radius: 10px;
+                color: #f8fafc;
+                min-height: 38px;
+                padding: 0 12px;
             }
-            QDateTimeEdit#reportDateEdit {
-                background: #242a33;
-                border: 1px solid #364150;
-                border-radius: 10px;
-                color: #eef2f8;
-                padding: 8px 10px;
-                min-height: 24px;
+            QFrame#dateField {
+                background: #232a34;
+                border: 1px solid #364152;
+                border-radius: 12px;
             }
-            QToolButton#reportDateClear {
+            QLineEdit#datePickerDisplay {
                 background: transparent;
                 border: none;
+                color: #f8fafc;
+                min-height: 46px;
+                padding: 0 12px;
+                selection-background-color: #3b82f6;
+            }
+            QToolButton#datePickerButton, QToolButton#dateClearButton {
+                background: transparent;
+                border: none;
+                min-width: 38px;
+                max-width: 38px;
+                min-height: 46px;
+                max-height: 46px;
+                padding: 0;
+            }
+            QToolButton#datePickerButton:hover, QToolButton#dateClearButton:hover {
+                background: rgba(96, 165, 250, 0.14);
+            }
+            QDialog#datePickerPopup {
+                background: #0f1726;
+                border: 1px solid #35588c;
+                border-radius: 16px;
+            }
+            QLabel#datePopupTitle {
+                color: #f8fbff;
+                font-size: 14px;
+                font-weight: 800;
+            }
+            QLabel#datePopupPreview {
+                color: #bfdbfe;
+                font-size: 12px;
+                padding: 6px 10px;
+                background: rgba(59, 130, 246, 0.12);
+                border: 1px solid rgba(147, 197, 253, 0.25);
+                border-radius: 10px;
+            }
+            QLabel#datePopupLabel {
+                color: #dbeafe;
+                font-size: 12px;
+                font-weight: 700;
+            }
+            QCalendarWidget#dateCalendar {
+                background: transparent;
+                border: none;
+            }
+            QCalendarWidget QWidget#qt_calendar_navigationbar {
+                background: transparent;
+                min-height: 34px;
+            }
+            QCalendarWidget QToolButton {
+                color: #eff6ff;
+                background: transparent;
+                border: none;
+                font-weight: 700;
+                min-width: 28px;
+            }
+            QCalendarWidget QMenu {
+                background: #111827;
+                color: #e5e7eb;
+                border: 1px solid #334155;
+            }
+            QCalendarWidget QSpinBox {
+                background: #111827;
+                border: 1px solid #334155;
+                border-radius: 8px;
+                color: #f8fafc;
+                min-height: 28px;
                 padding: 0 8px;
+            }
+            QCalendarWidget QAbstractItemView:enabled {
+                background: #0b1220;
+                color: #e5e7eb;
+                selection-background-color: #3b82f6;
+                selection-color: white;
+                outline: 0;
+            }
+            QTimeEdit#datePopupTimeEdit {
+                background: #111827;
+                border: 1px solid #334155;
+                border-radius: 10px;
+                color: #f8fafc;
+                min-height: 36px;
+                padding: 0 10px;
+            }
+            QPushButton#datePopupSecondaryButton, QPushButton#datePopupPrimaryButton {
+                min-height: 34px;
+                border-radius: 10px;
+                padding: 0 14px;
+                font-weight: 700;
+            }
+            QPushButton#datePopupSecondaryButton {
+                background: #1f2937;
+                border: 1px solid #374151;
+                color: #e5e7eb;
+            }
+            QPushButton#datePopupSecondaryButton:hover {
+                background: #273446;
+            }
+            QPushButton#datePopupPrimaryButton {
+                background: #2563eb;
+                border: none;
+                color: white;
+            }
+            QPushButton#datePopupPrimaryButton:hover {
+                background: #1d4ed8;
             }
             QFrame#reportSummaryCard {
                 background: #11161d;
@@ -446,6 +599,9 @@ class LprReportPage(QWidget):
                 color: #f8fafc;
                 font-size: 20px;
                 font-weight: 700;
+            }
+            QScrollArea, QScrollArea > QWidget > QWidget {
+                background: transparent;
             }
             """
         )
@@ -497,6 +653,7 @@ class LprReportPage(QWidget):
         self.search_btn.setEnabled(not busy)
         self.reset_btn.setEnabled(not busy)
         self.export_btn.setEnabled(not busy and bool(self.report_store.rows))
+        self.results_filter_btn.setEnabled(not busy)
 
         report_type = self.report_type_select.value() or "lpr"
         self.filter_state_chip.setText(f"Type: {report_type}")
@@ -508,6 +665,88 @@ class LprReportPage(QWidget):
             self.status_label.setText("No report rows returned for the current filters.")
         else:
             self.status_label.setText("Choose filters and run the report.")
+
+    def _sync_filters_window_ui(self) -> None:
+        if hasattr(self, "filters_panel"):
+            self._sync_filters_panel_width(animate=False)
+        else:
+            self.hero_scroll.setVisible(self.filters_window_visible)
+        self._update_filters_scroll_height()
+        if hasattr(self, "results_filter_btn"):
+            self.results_filter_btn.setText("Hide Sidebar" if self.filters_window_visible else "Show Sidebar")
+
+    def _update_filters_scroll_height(self) -> None:
+        if not hasattr(self, "hero_scroll"):
+            return
+        self.hero_scroll.setMaximumHeight(16777215)
+
+    def _target_filters_panel_width(self) -> int:
+        if not hasattr(self, "_root_layout"):
+            return 0
+        layout = self._root_layout
+        margins = layout.contentsMargins()
+        spacing = max(0, layout.spacing())
+        available = self.width() - margins.left() - margins.right() - spacing
+        if hasattr(self, "sidebar") and self.sidebar.isVisible():
+            available -= self.sidebar.width() + spacing
+        if available <= 0:
+            return 0
+        return max(0, min(340, int(available * 0.22)))
+
+    def _set_filters_panel_width(self, width: int) -> None:
+        if not hasattr(self, "filters_panel"):
+            return
+        self.filters_panel.setMaximumWidth(max(0, width))
+
+    def _animate_filters_panel_width(self, target: int) -> None:
+        if not hasattr(self, "filters_panel"):
+            return
+        target = max(0, int(target))
+        if self._filters_slide_animation is not None:
+            try:
+                self._filters_slide_animation.stop()
+            except Exception:
+                pass
+            self._filters_slide_animation.deleteLater()
+            self._filters_slide_animation = None
+
+        current = max(0, int(self.filters_panel.maximumWidth()))
+        if target > 0:
+            self.filters_panel.setVisible(True)
+        if current == target:
+            if target == 0:
+                self.filters_panel.setVisible(False)
+            return
+
+        animation = QPropertyAnimation(self.filters_panel, b"maximumWidth", self)
+        animation.setDuration(220)
+        animation.setStartValue(current)
+        animation.setEndValue(target)
+        animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        if target == 0:
+            animation.finished.connect(lambda: self.filters_panel.setVisible(False))
+        self._filters_slide_animation = animation
+        animation.start()
+
+    def _sync_filters_panel_width(self, animate: bool = False) -> None:
+        if not hasattr(self, "filters_panel") or not hasattr(self, "_root_layout"):
+            return
+        target = self._target_filters_panel_width() if self.filters_window_visible else 0
+        if animate:
+            self._animate_filters_panel_width(target)
+            return
+        self._set_filters_panel_width(target)
+        self.filters_panel.setVisible(target > 0)
+
+    def _set_filters_window_visible(self, visible: bool) -> None:
+        self.filters_window_visible = visible
+        self._sync_filters_panel_width(animate=True)
+        self._update_filters_scroll_height()
+        if hasattr(self, "results_filter_btn"):
+            self.results_filter_btn.setText("Hide Sidebar" if self.filters_window_visible else "Show Sidebar")
+
+    def toggle_filters_window(self) -> None:
+        self._set_filters_window_visible(not self.filters_window_visible)
 
     def _validate_payload(self) -> Optional[LprReportPayload]:
         date_from = self.date_from_field.value()
@@ -586,6 +825,12 @@ class LprReportPage(QWidget):
 
     def _show_error(self, text: str) -> None:
         self.toast.error("LPR Report", text)
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        self._sync_filters_panel_width(animate=False)
+        self._update_filters_scroll_height()
+
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -593,5 +838,3 @@ class LprReportPage(QWidget):
         path.addRect(QRectF(self.rect()))
         p.fillPath(path, QColor(Constants.DARK_BG))   # dark bg — cards float above it
         super().paintEvent(event)
-
-

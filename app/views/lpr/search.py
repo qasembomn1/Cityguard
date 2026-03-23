@@ -7,16 +7,27 @@ import urllib.parse
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
-from PySide6.QtCore import QDate, QDateTime, QEvent, QLocale, QObject, QSize, QThread,QRectF, QTime, Qt, QUrl, Signal
+from PySide6.QtCore import (
+    QDate,
+    QDateTime,
+    QEasingCurve,
+    QEvent,
+    QLocale,
+    QObject,
+    QPropertyAnimation,
+    QSize,
+    QThread,
+    QRectF,
+    QTime,
+    Qt,
+    QUrl,
+    Signal,
+)
 from PySide6.QtGui import QCursor, QIcon, QPixmap,QColor,QPainter,QPainterPath
 from app.constants._init_ import Constants
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PySide6.QtWidgets import (
     QApplication,
-    QCalendarWidget,
-    QCheckBox,
-    QComboBox,
-    QDialog,
     QFileDialog,
     QFrame,
     QGridLayout,
@@ -24,14 +35,10 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
-    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
-    QSpinBox,
-    QDoubleSpinBox,
     QStackedWidget,
-    QTimeEdit,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -45,8 +52,15 @@ from app.services.home.lpr.search_service import LprSearchService
 from app.store.auth.auth_store import AuthStore
 from app.store.home.lpr.search_store import LprSearchStore
 from app.store.home.user.department_store import DepartmentStore as CameraDepartmentStore
+from app.ui.button import PrimeButton
+from app.ui.checkbox import PrimeCheckBox
+from app.ui.date_picker import _CalendarPopup
+from app.ui.dialog import PrimeDialog
+from app.ui.input import PrimeInput
 from app.ui.multiselect import PrimeMultiSelect
+from app.ui.select import PrimeSelect
 from app.ui.table import PrimeDataTable, PrimeTableColumn
+from app.ui.toast import show_toast_message
 from app.utils.digits import normalize_ascii_digits
 from app.utils.env import resolve_http_base_url
 
@@ -88,20 +102,36 @@ TYPE_OPTIONS = ["Regular", "FAHS", "KATY"]
 REGION_OPTIONS = region_options()
 
 COLOR_OPTIONS = [
-    {"label": "White", "value": "White"},
-    {"label": "Black", "value": "Black"},
-    {"label": "Silver", "value": "Silver"},
-    {"label": "Gray", "value": "Gray"},
-    {"label": "Blue", "value": "Blue"},
-    {"label": "Red", "value": "Red"},
-    {"label": "Green", "value": "Green"},
-    {"label": "Yellow", "value": "Yellow"},
-    {"label": "Orange", "value": "Orange"},
-    {"label": "Brown", "value": "Brown"},
+  {
+    "label": "Government",
+    "value": "Government",
+  },
+  {
+    "label": "Private",
+    "value": "Private",
+  },
+  {
+    "label": "Transport",
+    "value": "Transport",
+  },
+  {
+    "label": "Taxi",
+    "value": "Taxi",
+  },
+  {
+    "label": "Fahs",
+    "value": "Fahs",
+  },
+  {
+    "label": "Other",
+    "value": "Other",
+  },
 ]
 
 GRID_OPTIONS = [2, 3, 4]
 ROWS_PER_PAGE_OPTIONS = [10, 20, 50, 100, 200]
+DIGITS_OPTIONS = [{"label": "Any Digits", "value": None}] + [{"label": str(n), "value": n} for n in range(1, 21)]
+CONFIDENCE_OPTIONS = [{"label": "Any Confidence", "value": 0}] + [{"label": f"{n}%", "value": n} for n in range(1, 101)]
 SEARCH_TIMEZONE = timezone(timedelta(hours=3))
 SEARCH_TIMEZONE_LABEL = "UTC+3"
 SEARCH_DATE_LOCALE = QLocale(QLocale.Language.English, QLocale.Country.UnitedStates)
@@ -163,10 +193,6 @@ class ClearableDateTimeField(QFrame):
         super().__init__(parent)
         self._placeholder = placeholder
         self._value: Optional[datetime] = None
-        self._popup: Optional[QDialog] = None
-        self._calendar: Optional[QCalendarWidget] = None
-        self._time_edit: Optional[QTimeEdit] = None
-        self._preview_label: Optional[QLabel] = None
         self.setObjectName("dateField")
 
         layout = QHBoxLayout(self)
@@ -201,20 +227,30 @@ class ClearableDateTimeField(QFrame):
         layout.addWidget(self.clear_btn)
         self.clear_btn.hide()
 
+        self._popup = _CalendarPopup(
+            self,
+            radius=16,
+            include_time=True,
+            time_display_format="hh:mm AP",
+            weekday_header_text_color="#a9bfdc",
+            weekday_header_weekend_text_color="#dbeafe",
+            navigation_icon_color="#eff6ff",
+            navigation_hover_background="#1a2b41",
+        )
+        self._popup.selection_applied.connect(self._apply_popup_selection)
+
     def clear(self) -> None:
         self._value = None
+        self._popup.set_selected_date_time(QDateTime.currentDateTime())
         self._sync_display()
-        if self._popup is not None:
-            self._sync_popup_from_value()
 
     def value(self) -> Optional[datetime]:
         return self._value
 
     def set_value(self, value: Optional[datetime]) -> None:
         self._value = _to_search_timezone(value) if value is not None else None
+        self._sync_popup_from_value()
         self._sync_display()
-        if self._popup is not None:
-            self._sync_popup_from_value()
 
     def eventFilter(self, watched: object, event: object) -> bool:
         if watched is self.display and isinstance(event, QEvent):
@@ -224,10 +260,7 @@ class ClearableDateTimeField(QFrame):
         return super().eventFilter(watched, event)
 
     def _show_popup(self) -> None:
-        self._ensure_popup()
         self._sync_popup_from_value()
-        if self._popup is None:
-            return
         popup_width = max(self.width(), 336)
         self._popup.resize(popup_width, self._popup.sizeHint().height())
         pos = self.mapToGlobal(self.rect().bottomLeft())
@@ -244,126 +277,26 @@ class ClearableDateTimeField(QFrame):
         self._popup.show()
         self._popup.raise_()
 
-    def _ensure_popup(self) -> None:
-        if self._popup is not None:
-            return
-
-        popup = QDialog(self, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
-        popup.setObjectName("datePickerPopup")
-        popup.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
-        popup_layout = QVBoxLayout(popup)
-        popup_layout.setContentsMargins(14, 14, 14, 14)
-        popup_layout.setSpacing(12)
-
-        title = QLabel(self._placeholder)
-        title.setObjectName("datePopupTitle")
-        popup_layout.addWidget(title)
-
-        preview = QLabel("")
-        preview.setObjectName("datePopupPreview")
-        preview.setWordWrap(True)
-        popup_layout.addWidget(preview)
-        self._preview_label = preview
-
-        calendar = QCalendarWidget()
-        calendar.setObjectName("dateCalendar")
-        calendar.setLocale(SEARCH_DATE_LOCALE)
-        calendar.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
-        calendar.setVerticalHeaderFormat(QCalendarWidget.VerticalHeaderFormat.NoVerticalHeader)
-        calendar.setGridVisible(False)
-        calendar.selectionChanged.connect(lambda: self._update_popup_preview())
-        popup_layout.addWidget(calendar)
-        self._calendar = calendar
-
-        time_row = QHBoxLayout()
-        time_row.setContentsMargins(0, 0, 0, 0)
-        time_row.setSpacing(10)
-        popup_layout.addLayout(time_row)
-
-        time_label = QLabel(f"Time ({SEARCH_TIMEZONE_LABEL})")
-        time_label.setObjectName("datePopupLabel")
-        time_row.addWidget(time_label)
-
-        time_edit = QTimeEdit()
-        time_edit.setObjectName("datePopupTimeEdit")
-        time_edit.setLocale(SEARCH_DATE_LOCALE)
-        time_edit.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
-        time_edit.setDisplayFormat("hh:mm AP")
-        time_edit.setTime(QTime.currentTime())
-        time_edit.timeChanged.connect(lambda _time: self._update_popup_preview())
-        time_row.addWidget(time_edit, 1)
-        self._time_edit = time_edit
-
-        actions = QHBoxLayout()
-        actions.setContentsMargins(0, 0, 0, 0)
-        actions.setSpacing(8)
-        popup_layout.addLayout(actions)
-
-        clear_btn = QPushButton("Clear")
-        clear_btn.setObjectName("datePopupSecondaryButton")
-        clear_btn.clicked.connect(self._clear_from_popup)
-        actions.addWidget(clear_btn)
-
-        now_btn = QPushButton("Now")
-        now_btn.setObjectName("datePopupSecondaryButton")
-        now_btn.clicked.connect(self._set_now)
-        actions.addWidget(now_btn)
-
-        actions.addStretch(1)
-
-        apply_btn = QPushButton("Apply")
-        apply_btn.setObjectName("datePopupPrimaryButton")
-        apply_btn.clicked.connect(self._apply_popup_selection)
-        actions.addWidget(apply_btn)
-
-        self._popup = popup
-
     def _sync_popup_from_value(self) -> None:
-        if self._calendar is None or self._time_edit is None:
-            return
         source = _to_search_timezone(self._value) if self._value is not None else datetime.now(SEARCH_TIMEZONE)
-        self._calendar.setSelectedDate(QDate(source.year, source.month, source.day))
-        self._time_edit.setTime(QTime(source.hour, source.minute))
-        self._update_popup_preview()
-
-    def _update_popup_preview(self) -> None:
-        if self._calendar is None or self._time_edit is None or self._preview_label is None:
-            return
-        selected = _as_search_datetime(
-            self._calendar.selectedDate().year(),
-            self._calendar.selectedDate().month(),
-            self._calendar.selectedDate().day(),
-            self._time_edit.time().hour(),
-            self._time_edit.time().minute(),
+        self._popup.set_selected_date_time(
+            QDateTime(
+                QDate(source.year, source.month, source.day),
+                QTime(source.hour, source.minute),
+            )
         )
-        self._preview_label.setText(_format_search_datetime(selected, with_timezone=True, verbose=True))
 
-    def _set_now(self) -> None:
-        if self._calendar is None or self._time_edit is None:
-            return
-        now = datetime.now(SEARCH_TIMEZONE)
-        self._calendar.setSelectedDate(QDate(now.year, now.month, now.day))
-        self._time_edit.setTime(QTime(now.hour, now.minute))
-        self._update_popup_preview()
-
-    def _clear_from_popup(self) -> None:
-        self.clear()
-        if self._popup is not None:
-            self._popup.hide()
-
-    def _apply_popup_selection(self) -> None:
-        if self._calendar is None or self._time_edit is None:
+    def _apply_popup_selection(self, value: QDateTime) -> None:
+        if not value.isValid():
             return
         self._value = _as_search_datetime(
-            self._calendar.selectedDate().year(),
-            self._calendar.selectedDate().month(),
-            self._calendar.selectedDate().day(),
-            self._time_edit.time().hour(),
-            self._time_edit.time().minute(),
+            value.date().year(),
+            value.date().month(),
+            value.date().day(),
+            value.time().hour(),
+            value.time().minute(),
         )
         self._sync_display()
-        if self._popup is not None:
-            self._popup.hide()
 
     def _sync_display(self) -> None:
         if self._value is None:
@@ -382,11 +315,13 @@ class FilterAccordionSection(QFrame):
         title_text: str,
         hint_text: str = "",
         expanded: bool = True,
+        collapsible: bool = True,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
         self._title_text = title_text
         self._expanded = expanded
+        self._collapsible = collapsible
         self.setObjectName("filterAccordion")
 
         root = QVBoxLayout(self)
@@ -395,8 +330,11 @@ class FilterAccordionSection(QFrame):
 
         self.header_btn = QPushButton()
         self.header_btn.setObjectName("filterAccordionHeader")
-        self.header_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self.header_btn.clicked.connect(self.toggle)
+        self.header_btn.setCursor(
+            QCursor(Qt.CursorShape.PointingHandCursor if collapsible else Qt.CursorShape.ArrowCursor)
+        )
+        if collapsible:
+            self.header_btn.clicked.connect(self.toggle)
         root.addWidget(self.header_btn)
 
         self.body = QFrame()
@@ -418,14 +356,22 @@ class FilterAccordionSection(QFrame):
     def is_expanded(self) -> bool:
         return self._expanded
 
+    def is_collapsible(self) -> bool:
+        return self._collapsible
+
     def set_expanded(self, expanded: bool, emit_signal: bool = False) -> None:
+        if not self._collapsible:
+            expanded = True
         self._expanded = expanded
         self.body.setVisible(expanded)
-        self.header_btn.setText(f"{'▾' if expanded else '▸'}  {self._title_text}")
+        prefix = f"{'▾' if expanded else '▸'}  " if self._collapsible else ""
+        self.header_btn.setText(f"{prefix}{self._title_text}")
         if emit_signal:
             self.toggled.emit(expanded)
 
     def toggle(self) -> None:
+        if not self._collapsible:
+            return
         self.set_expanded(not self._expanded, emit_signal=True)
 
 
@@ -469,25 +415,30 @@ class RemoteImageLabel(QLabel):
             return
         reply = self._net.get(QNetworkRequest(QUrl(self._image_url)))
         self._reply = reply
-        reply.finished.connect(self._on_done)
+        reply.finished.connect(lambda current=reply: self._on_done(current))
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self._apply_scaled()
 
     def _abort_reply(self) -> None:
-        if self._reply is not None:
-            try:
-                self._reply.abort()
-            except Exception:
-                pass
-            self._reply.deleteLater()
-            self._reply = None
-
-    def _on_done(self) -> None:
         reply = self._reply
         self._reply = None
         if reply is None:
+            return
+        try:
+            reply.abort()
+        except Exception:
+            pass
+        reply.deleteLater()
+
+    def _on_done(self, reply: QNetworkReply) -> None:
+        if reply is None:
+            return
+        if self._reply is reply:
+            self._reply = None
+        else:
+            reply.deleteLater()
             return
         try:
             if reply.error() != QNetworkReply.NetworkError.NoError:
@@ -645,13 +596,11 @@ class LprResultCard(QFrame):
         actions.setContentsMargins(0, 2, 0, 0)
         actions.setSpacing(8)
 
-        self.details_btn = QPushButton("Details")
-        self.details_btn.setObjectName("lprCardAction")
+        self.details_btn = PrimeButton("Details", variant="primary", mode="filled", size="sm")
         self.details_btn.clicked.connect(lambda: self.opened.emit(self.record))
         actions.addWidget(self.details_btn, 1)
 
-        self.search_btn = QPushButton("Search Similar")
-        self.search_btn.setObjectName("lprCardGhostAction")
+        self.search_btn = PrimeButton("Search Similar", variant="secondary", mode="outline", size="sm")
         self.search_btn.clicked.connect(lambda: self.search_requested.emit(self.record.number))
         actions.addWidget(self.search_btn, 1)
         root.addLayout(actions)
@@ -705,22 +654,105 @@ class LprSearchWorker(QObject):
         self.finished.emit(results)
 
 
-class LprDetailDialog(QDialog):
+class LprDetailDialog(PrimeDialog):
     search_requested = Signal(str)
+
+    _CONTENT_STYLE = """
+        QFrame#detailImageCard, QFrame#detailHighlightCard, QFrame#detailInfoCard {
+            background: #1f242d;
+            border: 1px solid #2f3642;
+            border-radius: 16px;
+        }
+        QFrame#detailMetricCard {
+            background: #141922;
+            border: 1px solid #2a3140;
+            border-radius: 12px;
+        }
+        QLabel#detailCardTitle {
+            color: #f8fafc;
+            font-size: 13px;
+            font-weight: 700;
+        }
+        QLabel#detailMuted {
+            color: #94a3b8;
+            font-size: 12px;
+        }
+        QLabel#detailPlateNumber {
+            color: #34d399;
+            font-size: 28px;
+            font-weight: 800;
+            letter-spacing: 1px;
+        }
+        QLabel#detailMetricValue {
+            color: #f8fafc;
+            font-size: 14px;
+            font-weight: 700;
+        }
+    """
 
     def __init__(
         self,
-        record: LprSearchResult,
+        records: List[LprSearchResult],
+        index: int,
         net: QNetworkAccessManager,
         parent: Optional[QWidget] = None,
     ) -> None:
-        super().__init__(parent)
-        self.record = record
-        self.setWindowTitle("Detection Details")
-        self.resize(1080, 760)
+        super().__init__(
+            title="Detection Details",
+            parent=parent,
+            width=1080,
+            height=800,
+            ok_text="Search Similar Plates",
+            cancel_text="Close",
+            draggable=False,
+        )
+        self._records = records
+        self._index = index
+        self._net = net
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(18, 18, 18, 18)
+        # ── prev / next in footer (left side) ──
+        self._prev_btn = PrimeButton("← Prev", variant="secondary", mode="outline", size="sm", width=90)
+        self._next_btn = PrimeButton("Next →", variant="secondary", mode="outline", size="sm", width=90)
+        self._prev_btn.clicked.connect(self._go_prev)
+        self._next_btn.clicked.connect(self._go_next)
+        footer = self.footer_widget.layout()
+        footer.insertWidget(0, self._prev_btn)
+        footer.insertWidget(1, self._next_btn)
+
+        # ── footer: ok → search ──
+        self.ok_button.clicked.disconnect()
+        self.ok_button.clicked.connect(self._request_search)
+
+        self._load()
+
+    # ── navigation ──────────────────────────────────────────────────
+    def _go_prev(self) -> None:
+        if self._index > 0:
+            self._index -= 1
+            self._load()
+
+    def _go_next(self) -> None:
+        if self._index < len(self._records) - 1:
+            self._index += 1
+            self._load()
+
+    def _load(self) -> None:
+        record = self._records[self._index]
+        self.record = record
+        total = len(self._records)
+        self.set_title(f"Detection Details  ({self._index + 1} / {total})")
+        self._prev_btn.setEnabled(self._index > 0)
+        self._next_btn.setEnabled(self._index < total - 1)
+        self.set_content(self._build_content(record), fill_height=True)
+
+    # ── content builder ─────────────────────────────────────────────
+    def _build_content(self, record: LprSearchResult) -> QWidget:
+        content = QWidget()
+        content.setFixedWidth(1032)
+        content.setStyleSheet(self._CONTENT_STYLE)
+
+        root = QVBoxLayout(content)
+        root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(14)
 
         grid = QGridLayout()
@@ -728,10 +760,10 @@ class LprDetailDialog(QDialog):
         grid.setVerticalSpacing(16)
         root.addLayout(grid, 1)
 
-        full_card = self._image_card("Full Camera Frame", net, _record_image_url(record, crop=False), "No Frame")
+        full_card = self._image_card("Full Camera Frame", _record_image_url(record, crop=False), "No Frame")
         grid.addWidget(full_card, 0, 0, 2, 2)
 
-        crop_card = self._image_card("License Plate", net, _record_image_url(record, crop=True), "No Plate Crop")
+        crop_card = self._image_card("License Plate", _record_image_url(record, crop=True), "No Plate Crop")
         grid.addWidget(crop_card, 0, 2, 1, 1)
 
         plate_card = QFrame()
@@ -755,7 +787,7 @@ class LprDetailDialog(QDialog):
         info_layout.setHorizontalSpacing(14)
         info_layout.setVerticalSpacing(14)
 
-        info_items = [
+        for idx, (label_text, value_text) in enumerate([
             ("Region", record.region or "Unknown"),
             ("Color", record.color_text),
             ("Type", record.plate_type or "-"),
@@ -764,8 +796,7 @@ class LprDetailDialog(QDialog):
             ("Detected At", record.created_text),
             ("Blacklist", "Yes" if record.is_blacklist else "No"),
             ("Whitelist", "Yes" if record.is_whitelist else "No"),
-        ]
-        for index, (label_text, value_text) in enumerate(info_items):
+        ]):
             card = QFrame()
             card.setObjectName("detailMetricCard")
             card_layout = QVBoxLayout(card)
@@ -778,94 +809,12 @@ class LprDetailDialog(QDialog):
             value.setWordWrap(True)
             card_layout.addWidget(label)
             card_layout.addWidget(value)
-            info_layout.addWidget(card, index // 4, index % 4)
+            info_layout.addWidget(card, idx // 4, idx % 4)
         root.addWidget(info_card)
 
-        buttons = QHBoxLayout()
-        buttons.setSpacing(10)
+        return content
 
-        similar_btn = QPushButton("Search Similar Plates")
-        similar_btn.setObjectName("detailPrimaryButton")
-        similar_btn.clicked.connect(self._request_search)
-        buttons.addWidget(similar_btn, 1)
-
-        close_btn = QPushButton("Close")
-        close_btn.setObjectName("detailGhostButton")
-        close_btn.clicked.connect(self.accept)
-        buttons.addWidget(close_btn, 0)
-        root.addLayout(buttons)
-
-        self.setStyleSheet(
-            """
-            QDialog {
-                background: #171b22;
-                color: #f8fafc;
-            }
-            QFrame#detailImageCard, QFrame#detailHighlightCard, QFrame#detailInfoCard {
-                background: #1f242d;
-                border: 1px solid #2f3642;
-                border-radius: 16px;
-            }
-            QFrame#detailMetricCard {
-                background: #141922;
-                border: 1px solid #2a3140;
-                border-radius: 12px;
-            }
-            QLabel#detailCardTitle {
-                color: #f8fafc;
-                font-size: 13px;
-                font-weight: 700;
-            }
-            QLabel#detailMuted {
-                color: #94a3b8;
-                font-size: 12px;
-            }
-            QLabel#detailPlateNumber {
-                color: #34d399;
-                font-size: 28px;
-                font-weight: 800;
-                letter-spacing: 1px;
-            }
-            QLabel#detailMetricValue {
-                color: #f8fafc;
-                font-size: 14px;
-                font-weight: 700;
-            }
-            QPushButton#detailPrimaryButton {
-                background: #2563eb;
-                border: none;
-                border-radius: 12px;
-                color: white;
-                font-size: 13px;
-                font-weight: 700;
-                min-height: 42px;
-            }
-            QPushButton#detailPrimaryButton:hover {
-                background: #1d4ed8;
-            }
-            QPushButton#detailGhostButton {
-                background: #27303d;
-                border: 1px solid #3a4555;
-                border-radius: 12px;
-                color: #e2e8f0;
-                font-size: 13px;
-                font-weight: 600;
-                min-height: 42px;
-                padding: 0 18px;
-            }
-            QPushButton#detailGhostButton:hover {
-                background: #313b4a;
-            }
-            """
-        )
-
-    def _image_card(
-        self,
-        title: str,
-        net: QNetworkAccessManager,
-        image_url: str,
-        fallback_text: str,
-    ) -> QWidget:
+    def _image_card(self, title: str, image_url: str, fallback_text: str) -> QWidget:
         frame = QFrame()
         frame.setObjectName("detailImageCard")
         layout = QVBoxLayout(frame)
@@ -875,7 +824,7 @@ class LprDetailDialog(QDialog):
         title_label.setObjectName("detailCardTitle")
         layout.addWidget(title_label)
 
-        image = RemoteImageLabel(net, fallback_text)
+        image = RemoteImageLabel(self._net, fallback_text)
         image.setMinimumHeight(240 if fallback_text == "No Plate Crop" else 360)
         image.setStyleSheet("background:#090d12;border:1px solid #1f2937;border-radius:14px;color:#64748b;")
         layout.addWidget(image, 1)
@@ -904,7 +853,7 @@ class LprSearchPage(QWidget):
         self.net = QNetworkAccessManager(self)
 
         self.filter_panel_open = False
-        self.filters_window_visible = True
+        self.filters_window_visible = False
         self.grid_view = False
         self.grid_columns = 3
         self.rows_per_page = 20
@@ -915,6 +864,7 @@ class LprSearchPage(QWidget):
         self._search_thread: Optional[QThread] = None
         self._search_worker: Optional[LprSearchWorker] = None
         self._filter_sections: list[FilterAccordionSection] = []
+        self._filters_slide_animation: Optional[QPropertyAnimation] = None
 
         self.auth_store.changed.connect(self._on_auth_changed)
         self.auth_store.error.connect(self._show_error)
@@ -934,41 +884,49 @@ class LprSearchPage(QWidget):
     def _build_ui(self) -> None:
         root = QHBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8)
-        root.setSpacing(0)
+        root.setSpacing(12)
+        self._root_layout = root
 
         self.date_from_input = ClearableDateTimeField("Start Time")
         self.date_to_input = ClearableDateTimeField("End Time")
+        self._allow_horizontal_shrink(self.date_from_input)
+        self._allow_horizontal_shrink(self.date_to_input)
 
         plate_section = FilterAccordionSection(
             "Plate Filters",
             "Refine plate matching after setting the main search range.",
-            expanded=False,
+            expanded=True,
+            collapsible=False,
         )
         self._filter_sections.append(plate_section)
         plate_section_layout = plate_section.body_layout
-        self.compare_combo = self._combo_box()
-        self.compare_combo.addItem("Any Compare", None)
-        for label, value in COMPARE_OPTIONS:
-            self.compare_combo.addItem(label, value)
+        self.compare_combo = PrimeSelect(
+            options=[{"label": "Any Compare", "value": None}] + [{"label": l, "value": v} for l, v in COMPARE_OPTIONS],
+            placeholder="Any Compare",
+        )
+        self._allow_horizontal_shrink(self.compare_combo)
         plate_section_layout.addWidget(self._field_block("Compare Rule", self.compare_combo))
 
-        self.plate_input = QLineEdit()
-        self.plate_input.setPlaceholderText("Optional: enter plate number")
+        self.plate_input = PrimeInput(placeholder_text="Optional: enter plate number")
         _bind_ascii_digit_input(self.plate_input)
+        self._allow_horizontal_shrink(self.plate_input)
 
         self.color_select = PrimeMultiSelect(COLOR_OPTIONS, placeholder="Select Colors")
+        self._allow_horizontal_shrink(self.color_select)
         plate_section_layout.addWidget(self._field_block("Color", self.color_select))
 
-        self.region_combo = self._combo_box()
-        self.region_combo.addItem("All Regions", None)
-        for region in REGION_OPTIONS:
-            self.region_combo.addItem(region, region)
+        self.region_combo = PrimeSelect(
+            options=[{"label": "All Regions", "value": None}] + [{"label": r, "value": r} for r in REGION_OPTIONS],
+            placeholder="All Regions",
+        )
+        self._allow_horizontal_shrink(self.region_combo)
         plate_section_layout.addWidget(self._field_block("Region", self.region_combo))
 
-        self.type_combo = self._combo_box()
-        self.type_combo.addItem("Any Type", None)
-        for item in TYPE_OPTIONS:
-            self.type_combo.addItem(item, item)
+        self.type_combo = PrimeSelect(
+            options=[{"label": "Any Type", "value": None}] + [{"label": t, "value": t} for t in TYPE_OPTIONS],
+            placeholder="Any Type",
+        )
+        self._allow_horizontal_shrink(self.type_combo)
         plate_section_layout.addWidget(self._field_block("Plate Type", self.type_combo))
 
         digits_conf_row = QGridLayout()
@@ -976,35 +934,51 @@ class LprSearchPage(QWidget):
         digits_conf_row.setHorizontalSpacing(10)
         digits_conf_row.setVerticalSpacing(10)
 
-        self.number_digits_spin = QSpinBox()
-        self.number_digits_spin.setRange(0, 20)
-        self.number_digits_spin.setSpecialValueText("Any")
-        digits_conf_row.addWidget(self._field_block("Digits", self.number_digits_spin), 0, 0)
+        self.number_digits_select = PrimeSelect(
+            options=DIGITS_OPTIONS,
+            placeholder="Any Digits",
+        )
+        self._allow_horizontal_shrink(self.number_digits_select)
+        digits_conf_row.addWidget(self._field_block("Digits", self.number_digits_select), 0, 0)
 
-        self.conf_spin = QDoubleSpinBox()
-        self.conf_spin.setRange(0, 100)
-        self.conf_spin.setDecimals(0)
-        self.conf_spin.setSingleStep(1.0)
-        self.conf_spin.setSuffix("%")
-        digits_conf_row.addWidget(self._field_block("Min Confidence", self.conf_spin), 0, 1)
+        self.conf_select = PrimeSelect(
+            options=CONFIDENCE_OPTIONS,
+            placeholder="Any Confidence",
+        )
+        self._allow_horizontal_shrink(self.conf_select)
+        self.conf_select.set_value(0)
+        digits_conf_row.addWidget(self._field_block("Min Confidence", self.conf_select), 1, 0)
         plate_section_layout.addLayout(digits_conf_row)
         source_section = FilterAccordionSection(
             "Source And Status",
             "Limit search to selected cameras or only blacklist or whitelist hits.",
-            expanded=False,
+            expanded=True,
+            collapsible=False,
         )
         self._filter_sections.append(source_section)
         source_section_layout = source_section.body_layout
         self.camera_select = PrimeMultiSelect([], placeholder="Select Cameras")
+        self._allow_horizontal_shrink(self.camera_select)
         source_section_layout.addWidget(self._field_block("Camera", self.camera_select))
 
-        checks = QHBoxLayout()
+        checks = QVBoxLayout()
         checks.setSpacing(12)
-        self.blacklist_check = QCheckBox("In Blacklist")
-        self.whitelist_check = QCheckBox("In Whitelist")
-        checks.addWidget(self.blacklist_check, 1)
-        checks.addWidget(self.whitelist_check, 1)
+        self.blacklist_check = PrimeCheckBox("In Blacklist")
+        self.whitelist_check = PrimeCheckBox("In Whitelist")
+        checks.addWidget(self.blacklist_check)
+        checks.addWidget(self.whitelist_check)
         source_section_layout.addLayout(checks)
+
+        self.filters_panel = QFrame()
+        self.filters_panel.setObjectName("filtersPanel")
+        self.filters_panel.setMinimumWidth(0)
+        self.filters_panel.setMaximumWidth(0 if not self.filters_window_visible else 16777215)
+        self.filters_panel.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        filters_layout = QVBoxLayout(self.filters_panel)
+        filters_layout.setContentsMargins(0, 0, 0, 0)
+        filters_layout.setSpacing(0)
+        self.filters_panel.setVisible(self.filters_window_visible)
+        root.addWidget(self.filters_panel, 0)
 
         main_panel = QFrame()
         main_panel.setObjectName("resultsPanel")
@@ -1012,37 +986,40 @@ class LprSearchPage(QWidget):
         main_layout.setContentsMargins(18, 16, 18, 18)
         main_layout.setSpacing(14)
         root.addWidget(main_panel, 1)
+        root.setStretch(0, 1)
+        root.setStretch(1, 4)
 
         self.hero_scroll = QScrollArea()
         self.hero_scroll.setObjectName("filtersScroll")
         self.hero_scroll.setWidgetResizable(True)
         self.hero_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.hero_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.hero_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.hero_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
-        self.hero_scroll.setMinimumHeight(0)
-        main_layout.addWidget(self.hero_scroll)
+        self.hero_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.hero_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        filters_layout.addWidget(self.hero_scroll, 1)
 
         hero_frame = QFrame()
         hero_frame.setObjectName("searchHero")
+        hero_frame.setMinimumWidth(0)
         self.hero_frame = hero_frame
         hero_layout = QVBoxLayout(hero_frame)
         hero_layout.setContentsMargins(18, 18, 18, 18)
         hero_layout.setSpacing(14)
         self.hero_scroll.setWidget(hero_frame)
 
-        hero_head = QHBoxLayout()
+        hero_head = QVBoxLayout()
         hero_head.setContentsMargins(0, 0, 0, 0)
-        hero_head.setSpacing(8)
+        hero_head.setSpacing(6)
         hero_layout.addLayout(hero_head)
 
         hero_text = QVBoxLayout()
         hero_text.setContentsMargins(0, 0, 0, 0)
         hero_text.setSpacing(4)
-        hero_head.addLayout(hero_text, 1)
+        hero_head.addLayout(hero_text)
 
-        hero_title = QLabel("LPR Search Window")
+        hero_title = QLabel("LPR Search")
         hero_title.setObjectName("heroTitle")
+        hero_title.setWordWrap(True)
         hero_text.addWidget(hero_title)
 
         hero_hint = QLabel("Search by time range and plate number. Open advanced filters only when you need to narrow the results.")
@@ -1053,12 +1030,13 @@ class LprSearchPage(QWidget):
         helper_chip = QLabel("Quick search")
         helper_chip.setObjectName("heroChip")
         self.filter_state_chip = helper_chip
-        hero_head.addWidget(helper_chip, 0, Qt.AlignmentFlag.AlignTop)
+        hero_head.addWidget(helper_chip, 0, Qt.AlignmentFlag.AlignLeft)
 
         time_band = FilterAccordionSection(
             "Time Range",
             "These date pickers control which LPR records are searched.",
-            expanded=False,
+            expanded=True,
+            collapsible=False,
         )
         self._filter_sections.append(time_band)
         time_layout = QGridLayout()
@@ -1066,7 +1044,6 @@ class LprSearchPage(QWidget):
         time_layout.setHorizontalSpacing(12)
         time_layout.setVerticalSpacing(10)
         time_layout.setColumnStretch(0, 1)
-        time_layout.setColumnStretch(1, 1)
         hero_layout.addWidget(time_band)
         time_band.body_layout.addLayout(time_layout)
         time_layout.addWidget(
@@ -1084,14 +1061,15 @@ class LprSearchPage(QWidget):
                 self.date_to_input,
                 "Search until this timestamp.",
             ),
-            0,
             1,
+            0,
         )
 
         query_band = FilterAccordionSection(
             "Plate Lookup",
             "Optional. Leave blank to search every plate inside the selected time range.",
-            expanded=False,
+            expanded=True,
+            collapsible=False,
         )
         self._filter_sections.append(query_band)
         query_layout = QVBoxLayout()
@@ -1112,30 +1090,27 @@ class LprSearchPage(QWidget):
         for section in self._filter_sections:
             section.toggled.connect(self._sync_filter_toggle_ui)
 
-        self.reset_btn = QPushButton("Reset Filters")
-        self.reset_btn.setObjectName("secondarySidebarButton")
-        self.reset_btn.setMinimumWidth(154)
+        self.reset_btn = PrimeButton("Reset Filters", variant="secondary", mode="outline", size="sm")
         self.reset_btn.clicked.connect(self.reset_filters)
 
-        self.filter_toggle_btn = QPushButton("Hide Filters")
-        self.filter_toggle_btn.setObjectName("filterToggleButton")
-        self.filter_toggle_btn.setMinimumWidth(154)
+        self.filter_toggle_btn = PrimeButton("All Filters Visible", variant="secondary", mode="outline", size="sm")
         self.filter_toggle_btn.clicked.connect(self.toggle_filter_panel)
+        self.filter_toggle_btn.hide()
 
-        self.search_btn = QPushButton("Search Records")
-        self.search_btn.setObjectName("primarySidebarButton")
-        self.search_btn.setMinimumWidth(170)
+        self.search_btn = PrimeButton("Search Records", variant="primary", mode="filled", size="sm")
         self.search_btn.clicked.connect(self.perform_search)
 
-        hero_actions = QHBoxLayout()
+        hero_actions = QVBoxLayout()
         hero_actions.setContentsMargins(0, 0, 0, 0)
-        hero_actions.setSpacing(10)
-        hero_actions.addWidget(self.filter_toggle_btn, 0)
-        hero_actions.addWidget(self.reset_btn, 0)
-        hero_actions.addWidget(self.search_btn, 0)
-        hero_actions.addStretch(1)
+        hero_actions.setSpacing(8)
+        self._allow_horizontal_shrink(self.filter_toggle_btn)
+        self._allow_horizontal_shrink(self.reset_btn)
+        self._allow_horizontal_shrink(self.search_btn)
+        hero_actions.addWidget(self.reset_btn)
+        hero_actions.addWidget(self.search_btn)
         hero_layout.addLayout(hero_actions)
         self._sync_filter_toggle_ui()
+        self._sync_filters_window_ui()
         self._update_filters_scroll_height()
 
         toolbar_frame = QFrame()
@@ -1156,27 +1131,32 @@ class LprSearchPage(QWidget):
         left_cluster.addWidget(self.page_summary)
         toolbar.addLayout(left_cluster, 1)
 
-        self.results_filter_btn = QPushButton("Hide Filters")
-        self.results_filter_btn.setObjectName("filterToggleButton")
+        self.results_filter_btn = PrimeButton(
+            "Hide Sidebar" if self.filters_window_visible else "Show Sidebar",
+            variant="secondary",
+            mode="outline",
+            size="sm",
+        )
         self.results_filter_btn.clicked.connect(self.toggle_filters_window)
         toolbar.addWidget(self.results_filter_btn)
 
-        self.grid_cols_combo = self._combo_box()
-        for count in GRID_OPTIONS:
-            self.grid_cols_combo.addItem(f"{count} Col", count)
-        self.grid_cols_combo.setCurrentText("3 Col")
-        self.grid_cols_combo.currentIndexChanged.connect(self._on_grid_columns_changed)
+        self.grid_cols_combo = PrimeSelect(
+            options=[{"label": f"{c} Col", "value": c} for c in GRID_OPTIONS],
+            placeholder="3 Col",
+        )
+        self.grid_cols_combo.set_value(3)
+        self.grid_cols_combo.value_changed.connect(self._on_grid_columns_changed)
         toolbar.addWidget(self.grid_cols_combo)
 
-        self.rows_combo = self._combo_box()
-        for count in ROWS_PER_PAGE_OPTIONS:
-            self.rows_combo.addItem(f"{count} Rows", count)
-        self.rows_combo.setCurrentText("20 Rows")
-        self.rows_combo.currentIndexChanged.connect(self._on_rows_changed)
+        self.rows_combo = PrimeSelect(
+            options=[{"label": f"{c} Rows", "value": c} for c in ROWS_PER_PAGE_OPTIONS],
+            placeholder="20 Rows",
+        )
+        self.rows_combo.set_value(20)
+        self.rows_combo.value_changed.connect(self._on_rows_changed)
         toolbar.addWidget(self.rows_combo)
 
-        self.export_btn = QPushButton("Export")
-        self.export_btn.setObjectName("toolbarButton")
+        self.export_btn = PrimeButton("Export", variant="primary", mode="filled", size="sm")
         self.export_btn.clicked.connect(self.export_csv)
         toolbar.addWidget(self.export_btn)
 
@@ -1211,6 +1191,7 @@ class LprSearchPage(QWidget):
         self.grid_scroll.setWidgetResizable(True)
         self.grid_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.grid_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.grid_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         grid_page_layout.addWidget(self.grid_scroll, 1)
 
         self.grid_content = QWidget()
@@ -1227,13 +1208,11 @@ class LprSearchPage(QWidget):
         pagination.addWidget(self.grid_meta)
         pagination.addStretch(1)
 
-        self.prev_btn = QPushButton("Prev")
-        self.prev_btn.setObjectName("pagerButton")
+        self.prev_btn = PrimeButton("← Prev", variant="secondary", mode="outline", size="sm")
         self.prev_btn.clicked.connect(self._go_prev_page)
         pagination.addWidget(self.prev_btn)
 
-        self.next_btn = QPushButton("Next")
-        self.next_btn.setObjectName("pagerButton")
+        self.next_btn = PrimeButton("Next →", variant="secondary", mode="outline", size="sm")
         self.next_btn.clicked.connect(self._go_next_page)
         pagination.addWidget(self.next_btn)
         grid_page_layout.addLayout(pagination)
@@ -1275,6 +1254,10 @@ class LprSearchPage(QWidget):
                 color: #e2e8f0;
                 font-size: 13px;
             }
+            QFrame#filtersPanel {
+                background: transparent;
+                border: none;
+            }
             QFrame#resultsPanel {
                 background: #171b22;
                 border: 1px solid #2b3240;
@@ -1286,41 +1269,36 @@ class LprSearchPage(QWidget):
                 border-radius: 16px;
             }
             QFrame#searchHero {
-                background: qlineargradient(
-                    x1: 0, y1: 0, x2: 1, y2: 1,
-                    stop: 0 #182740,
-                    stop: 0.55 #132238,
-                    stop: 1 #0f1726
-                );
-                border: 1px solid #35588c;
+                background: #171b22;
+                border: 1px solid #2b3240;
                 border-radius: 22px;
             }
             QFrame#filterAccordion {
-                background: rgba(7, 13, 24, 0.52);
-                border: 1px solid #38527b;
+                background: #1f2630;
+                border: 1px solid #2e3746;
                 border-radius: 18px;
             }
             QPushButton#filterAccordionHeader {
                 background: transparent;
                 border: none;
-                color: #eff6ff;
+                color: #e2e8f0;
                 font-size: 14px;
                 font-weight: 800;
                 padding: 14px 16px;
                 text-align: left;
             }
             QPushButton#filterAccordionHeader:hover {
-                background: rgba(96, 165, 250, 0.08);
+                background: rgba(148, 163, 184, 0.08);
             }
             QPushButton#filterAccordionHeader:disabled {
                 color: #64748b;
             }
             QFrame#filterAccordionBody {
                 background: transparent;
-                border-top: 1px solid rgba(74, 98, 136, 0.55);
+                border-top: 1px solid rgba(71, 85, 105, 0.55);
             }
             QLabel#filterAccordionHint {
-                color: #a9bfdc;
+                color: #94a3b8;
                 font-size: 11px;
             }
             QFrame#filterSection {
@@ -1334,19 +1312,19 @@ class LprSearchPage(QWidget):
                 font-weight: 800;
             }
             QLabel#heroTitle {
-                color: #f8fbff;
+                color: #f8fafc;
                 font-size: 28px;
                 font-weight: 900;
             }
             QLabel#heroHint {
-                color: #ccddf8;
+                color: #94a3b8;
                 font-size: 13px;
             }
             QLabel#heroChip {
-                background: rgba(96, 165, 250, 0.16);
-                border: 1px solid rgba(147, 197, 253, 0.38);
+                background: rgba(148, 163, 184, 0.14);
+                border: 1px solid rgba(148, 163, 184, 0.32);
                 border-radius: 12px;
-                color: #dbeafe;
+                color: #e2e8f0;
                 font-size: 11px;
                 font-weight: 800;
                 padding: 6px 10px;
@@ -1370,12 +1348,12 @@ class LprSearchPage(QWidget):
                 font-weight: 700;
             }
             QLabel#heroFieldLabel {
-                color: #dbeafe;
+                color: #cbd5e1;
                 font-size: 12px;
                 font-weight: 800;
             }
             QLabel#heroFieldHint {
-                color: #9eb8d9;
+                color: #94a3b8;
                 font-size: 11px;
             }
             QLabel#sectionTitle {
@@ -1406,8 +1384,8 @@ class LprSearchPage(QWidget):
                 width: 24px;
             }
             QFrame#dateField {
-                background: #0d1524;
-                border: 1px solid #4a6288;
+                background: #232a34;
+                border: 1px solid #364152;
                 border-radius: 12px;
             }
             QLineEdit#datePickerDisplay {
@@ -1436,8 +1414,8 @@ class LprSearchPage(QWidget):
             QFrame#searchHero QDoubleSpinBox,
             QFrame#searchHero QDateTimeEdit,
             QFrame#searchHero QTimeEdit {
-                background: #0d1524;
-                border: 1px solid #4a6288;
+                background: #232a34;
+                border: 1px solid #364152;
                 border-radius: 12px;
                 color: #f8fafc;
                 min-height: 44px;
@@ -1449,7 +1427,7 @@ class LprSearchPage(QWidget):
             QFrame#searchHero QDoubleSpinBox:focus,
             QFrame#searchHero QDateTimeEdit:focus,
             QFrame#searchHero QTimeEdit:focus {
-                border: 1px solid #93c5fd;
+                border: 1px solid #64748b;
             }
             QCheckBox {
                 color: #dbe4f0;
@@ -1801,11 +1779,6 @@ class LprSearchPage(QWidget):
             """
         )
 
-    def _combo_box(self) -> QComboBox:
-        combo = QComboBox()
-        combo.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        return combo
-
     def _field_block(self, label_text: str, field: QWidget) -> QWidget:
         wrapper = QWidget()
         wrapper.setObjectName("fieldBlock")
@@ -1817,6 +1790,15 @@ class LprSearchPage(QWidget):
         layout.addWidget(label)
         layout.addWidget(field)
         return wrapper
+
+    def _allow_horizontal_shrink(self, widget: QWidget) -> None:
+        widget.setMinimumWidth(0)
+        policy = widget.sizePolicy()
+        if policy.horizontalPolicy() == QSizePolicy.Policy.Fixed:
+            policy.setHorizontalPolicy(QSizePolicy.Policy.Preferred)
+        else:
+            policy.setHorizontalPolicy(QSizePolicy.Policy.Expanding)
+        widget.setSizePolicy(policy)
 
     def _hero_field_block(self, label_text: str, field: QWidget, hint_text: str) -> QWidget:
         wrapper = QWidget()
@@ -1878,6 +1860,11 @@ class LprSearchPage(QWidget):
         self.date_from_input.set_value(now - timedelta(hours=24))
 
     def _sync_filter_toggle_ui(self, *_args) -> None:
+        if self._filter_sections and all(not section.is_collapsible() for section in self._filter_sections):
+            self.filter_panel_open = True
+            self.filter_toggle_btn.setText("All Filters Visible")
+            self.filter_state_chip.setText("All filters visible")
+            return
         open_count = sum(1 for section in self._filter_sections if section.is_expanded())
         self.filter_panel_open = open_count > 0
         if open_count <= 0:
@@ -1891,22 +1878,81 @@ class LprSearchPage(QWidget):
             self.filter_state_chip.setText(f"{open_count} sections open")
 
     def _sync_filters_window_ui(self) -> None:
-        self.hero_scroll.setVisible(self.filters_window_visible)
+        if hasattr(self, "filters_panel"):
+            self._sync_filters_panel_width(animate=False)
+        else:
+            self.hero_scroll.setVisible(self.filters_window_visible)
         self._update_filters_scroll_height()
-        self.results_filter_btn.setText("Hide Filters" if self.filters_window_visible else "Show Filters")
+        if hasattr(self, "results_filter_btn"):
+            self.results_filter_btn.setText("Hide Sidebar" if self.filters_window_visible else "Show Sidebar")
 
     def _update_filters_scroll_height(self) -> None:
         if not hasattr(self, "hero_scroll"):
             return
-        max_height = max(220, min(460, int(self.height() * 0.46)))
-        self.hero_scroll.setMaximumHeight(max_height)
+        self.hero_scroll.setMaximumHeight(16777215)
+
+    def _target_filters_panel_width(self) -> int:
+        if not hasattr(self, "_root_layout"):
+            return 0
+        layout = self._root_layout
+        margins = layout.contentsMargins()
+        spacing = max(0, layout.spacing())
+        available = self.width() - margins.left() - margins.right() - spacing
+        if available <= 0:
+            return 0
+        return max(0, int(available * 0.2))
+
+    def _set_filters_panel_width(self, width: int) -> None:
+        if not hasattr(self, "filters_panel"):
+            return
+        self.filters_panel.setMaximumWidth(max(0, width))
+
+    def _animate_filters_panel_width(self, target: int) -> None:
+        if not hasattr(self, "filters_panel"):
+            return
+        target = max(0, int(target))
+        if self._filters_slide_animation is not None:
+            try:
+                self._filters_slide_animation.stop()
+            except Exception:
+                pass
+            self._filters_slide_animation.deleteLater()
+            self._filters_slide_animation = None
+
+        current = max(0, int(self.filters_panel.maximumWidth()))
+        if target > 0:
+            self.filters_panel.setVisible(True)
+        if current == target:
+            if target == 0:
+                self.filters_panel.setVisible(False)
+            return
+
+        animation = QPropertyAnimation(self.filters_panel, b"maximumWidth", self)
+        animation.setDuration(220)
+        animation.setStartValue(current)
+        animation.setEndValue(target)
+        animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        if target == 0:
+            animation.finished.connect(lambda: self.filters_panel.setVisible(False))
+        self._filters_slide_animation = animation
+        animation.start()
+
+    def _sync_filters_panel_width(self, animate: bool = False) -> None:
+        if not hasattr(self, "filters_panel") or not hasattr(self, "_root_layout"):
+            return
+        target = self._target_filters_panel_width() if self.filters_window_visible else 0
+        if animate:
+            self._animate_filters_panel_width(target)
+            return
+        self._set_filters_panel_width(target)
+        self.filters_panel.setVisible(target > 0)
 
     def _set_filters_window_visible(self, visible: bool) -> None:
         self.filters_window_visible = visible
-        if not visible:
-            self._set_filter_panel_visible(False)
-            return
-        self._sync_filters_window_ui()
+        self._sync_filters_panel_width(animate=True)
+        self._update_filters_scroll_height()
+        if hasattr(self, "results_filter_btn"):
+            self.results_filter_btn.setText("Hide Sidebar" if self.filters_window_visible else "Show Sidebar")
 
     def _set_filter_panel_visible(self, visible: bool) -> None:
         for section in self._filter_sections:
@@ -1922,6 +1968,7 @@ class LprSearchPage(QWidget):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
+        self._sync_filters_panel_width(animate=False)
         self._update_filters_scroll_height()
 
     def set_view_mode(self, grid: bool) -> None:
@@ -1939,14 +1986,14 @@ class LprSearchPage(QWidget):
     def reset_filters(self) -> None:
         self.has_searched = False
         self._apply_default_date_range()
-        self.compare_combo.setCurrentIndex(0)
+        self.compare_combo.set_value(None)
         self.plate_input.clear()
         self.color_select.set_value([])
-        self.region_combo.setCurrentIndex(0)
-        self.type_combo.setCurrentIndex(0)
+        self.region_combo.set_value(None)
+        self.type_combo.set_value(None)
         self.camera_select.set_value([])
-        self.number_digits_spin.setValue(0)
-        self.conf_spin.setValue(0.0)
+        self.number_digits_select.set_value(None)
+        self.conf_select.set_value(0)
         self.blacklist_check.setChecked(False)
         self.whitelist_check.setChecked(False)
         self.search_store.clear()
@@ -1955,6 +2002,10 @@ class LprSearchPage(QWidget):
         self.refresh()
 
     def _current_payload(self) -> Dict[str, object]:
+        conf_value = self.conf_select.value()
+        conf = int(conf_value) if isinstance(conf_value, int) else 0
+        digits_value = self.number_digits_select.value()
+        number_digits = int(digits_value) if isinstance(digits_value, int) else None
         return {
             "start": 0,
             "length": max(300, self.rows_per_page * 4),
@@ -1962,14 +2013,14 @@ class LprSearchPage(QWidget):
             "order": "desc",
             "date_from": self.date_from_input.value(),
             "date_to": self.date_to_input.value(),
-            "compare": self.compare_combo.currentData(),
+            "compare": self.compare_combo.value(),
             "plate_no": normalize_ascii_digits(self.plate_input.text()).strip(),
             "color_names": list(self.color_select.value()),
-            "region": self.region_combo.currentData(),
-            "type": self.type_combo.currentData(),
+            "region": self.region_combo.value(),
+            "type": self.type_combo.value(),
             "camera_ids": list(self.camera_select.value()),
-            "conf": int(round(self.conf_spin.value())),
-            "number_digits": int(self.number_digits_spin.value()) or None,
+            "conf": conf,
+            "number_digits": number_digits,
             "blacklist": self.blacklist_check.isChecked(),
             "whitelist": self.whitelist_check.isChecked(),
         }
@@ -1983,7 +2034,6 @@ class LprSearchPage(QWidget):
         if isinstance(date_from, datetime) and isinstance(date_to, datetime) and date_from > date_to:
             self._show_error("Start time must be earlier than end time.")
             return
-        self._set_filters_window_visible(False)
         self.has_searched = True
         self.search_in_progress = True
         self.search_store.loading = True
@@ -2013,7 +2063,6 @@ class LprSearchPage(QWidget):
         self.search_store.loading = False
         self.search_in_progress = False
         self.current_page = 0
-        self._set_filters_window_visible(False)
         if QApplication.overrideCursor() is not None:
             QApplication.restoreOverrideCursor()
         self.search_btn.setEnabled(True)
@@ -2025,7 +2074,6 @@ class LprSearchPage(QWidget):
         self.search_store.loading = False
         self.search_in_progress = False
         self.current_page = 0
-        self._set_filters_window_visible(False)
         if QApplication.overrideCursor() is not None:
             QApplication.restoreOverrideCursor()
         self.search_btn.setEnabled(True)
@@ -2037,23 +2085,21 @@ class LprSearchPage(QWidget):
         self._search_thread = None
         self._search_worker = None
 
-    def _on_grid_columns_changed(self, _index: int) -> None:
-        value = self.grid_cols_combo.currentData()
+    def _on_grid_columns_changed(self, value=None) -> None:
+        if value is None:
+            value = self.grid_cols_combo.value()
         if isinstance(value, int) and value > 0:
             self.grid_columns = value
         self.refresh()
 
-    def _on_rows_changed(self, _index: int) -> None:
-        value = self.rows_combo.currentData()
+    def _on_rows_changed(self, value=None) -> None:
+        if value is None:
+            value = self.rows_combo.value()
         if not isinstance(value, int) or value <= 0:
             return
         self.rows_per_page = value
         self.current_page = 0
-        table_index = self.table._page_size_combo.findData(value)
-        if table_index >= 0:
-            self.table._page_size_combo.setCurrentIndex(table_index)
-        else:
-            self.table._on_page_size_changed(self.rows_combo.currentIndex())
+        self.table.set_page_size(value)
         self.refresh()
 
     def _go_prev_page(self) -> None:
@@ -2236,7 +2282,12 @@ class LprSearchPage(QWidget):
     def open_detail_dialog(self, record: object) -> None:
         if not isinstance(record, LprSearchResult):
             return
-        dialog = LprDetailDialog(record, self.net, self)
+        records = list(self.search_store.results)
+        try:
+            index = next(i for i, r in enumerate(records) if r is record or r.id == record.id)
+        except StopIteration:
+            index = 0
+        dialog = LprDetailDialog(records, index, self.net, self)
         dialog.search_requested.connect(self.search_similar_plate)
         dialog.exec()
 
@@ -2278,10 +2329,10 @@ class LprSearchPage(QWidget):
         except Exception as exc:
             self._show_error(f"Failed to export CSV: {exc}")
             return
-        QMessageBox.information(self, "Export Complete", f"Results exported to:\n{path}")
+        show_toast_message(self, "success", "Export Complete", f"Results exported to:\n{path}")
 
     def _show_error(self, text: str) -> None:
-        QMessageBox.critical(self, "Error", text)
+        show_toast_message(self, "error", "Error", text)
 
     def paintEvent(self, event):
         p = QPainter(self)

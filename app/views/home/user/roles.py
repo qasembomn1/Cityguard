@@ -4,18 +4,14 @@ import os
 import sys
 from typing import Any, Dict, List, Optional
 
-from PySide6.QtCore import Qt, Signal,QRectF
+from PySide6.QtCore import QSize, Qt, Signal,QRectF
 from PySide6.QtGui import QIcon,QPainterPath,QPainter,QColor
 from PySide6.QtWidgets import (
-    QDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QMainWindow,
-    QMessageBox,
-    QPushButton,
     QScrollArea,
     QToolButton,
     QVBoxLayout,
@@ -25,8 +21,13 @@ from PySide6.QtWidgets import (
 from app.models.role import PermissionResponse, RoleResponse
 from app.services.home.user.role_service import RoleService
 from app.store.home.user.role_store import RoleStore
+from app.ui.button import PrimeButton
 from app.ui.checkbox import PrimeCheckBox
+from app.ui.confirm_dialog import PrimeConfirmDialog
+from app.ui.dialog import PrimeDialog
+from app.ui.input import PrimeInput
 from app.ui.table import PrimeDataTable, PrimeTableColumn
+from app.ui.toast import show_toast_message
 from app.views.home.user._shared import USER_MANAGEMENT_SIDEBAR_STYLES, UserManagementSidebar
 from app.constants._init_ import Constants
 
@@ -39,7 +40,7 @@ def _icon_path(name: str) -> str:
     return os.path.join(_ICONS_DIR, name)
 
 
-class RoleDialog(QDialog):
+class RoleDialog(PrimeDialog):
     submitted = Signal(dict, bool)
 
     def __init__(
@@ -48,30 +49,42 @@ class RoleDialog(QDialog):
         role: Optional[RoleResponse] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
-        super().__init__(parent)
+        title = "Edit Role" if role is not None else "Add Role"
+        super().__init__(
+            title=title,
+            parent=parent,
+            width=860,
+            height=640,
+            ok_text="Save",
+            cancel_text="Cancel",
+        )
         self.role = role
         self.is_edit_mode = role is not None
         self.permissions = list(permissions)
         self._permission_checks: Dict[int, PrimeCheckBox] = {}
 
-        self.setWindowTitle("Role")
-        self.resize(860, 640)
+        # ── form content ──
+        container = QWidget()
+        container_layout = QVBoxLayout(container)
+        container_layout.setContentsMargins(0, 0, 0, 0)
+        container_layout.setSpacing(12)
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(18, 18, 18, 18)
-        root.setSpacing(14)
+        name_label = QLabel("Role Name *")
+        name_label.setStyleSheet("color: #d8e1ee; font-size: 12px; font-weight: 700;")
+        container_layout.addWidget(name_label)
 
-        self.name_edit = QLineEdit()
-        self.name_edit.setPlaceholderText("Role Name")
-        root.addWidget(QLabel("Role Name *"))
-        root.addWidget(self.name_edit)
+        self.name_edit = PrimeInput(placeholder_text="Role Name")
+        container_layout.addWidget(self.name_edit)
 
-        root.addWidget(QLabel("Permissions"))
+        perm_label = QLabel("Permissions")
+        perm_label.setStyleSheet("color: #d8e1ee; font-size: 12px; font-weight: 700;")
+        container_layout.addWidget(perm_label)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("background: transparent; border: none;")
 
         content = QWidget()
         self.permission_grid = QGridLayout(content)
@@ -79,27 +92,21 @@ class RoleDialog(QDialog):
         self.permission_grid.setHorizontalSpacing(12)
         self.permission_grid.setVerticalSpacing(12)
         scroll.setWidget(content)
-        root.addWidget(scroll, 1)
+        container_layout.addWidget(scroll, 1)
+
+        self.set_content(container, fill_height=True)
 
         self._build_permission_cards()
 
-        controls = QHBoxLayout()
-        controls.addStretch(1)
-
-        reset_btn = QPushButton("Reset")
+        # ── footer: add Reset before Cancel ──
+        reset_btn = PrimeButton("Reset", variant="secondary", mode="outline", size="sm", width=80)
         reset_btn.clicked.connect(self._reset)
-        controls.addWidget(reset_btn)
+        self.footer_widget.layout().insertWidget(1, reset_btn)
 
-        cancel_btn = QPushButton("Cancel")
-        cancel_btn.clicked.connect(self.reject)
-        controls.addWidget(cancel_btn)
+        # ── redirect ok → _submit ──
+        self.ok_button.clicked.disconnect()
+        self.ok_button.clicked.connect(self._submit)
 
-        save_btn = QPushButton("Save")
-        save_btn.clicked.connect(self._submit)
-        controls.addWidget(save_btn)
-        root.addLayout(controls)
-
-        self._apply_style()
         self._reset()
 
     def _build_permission_cards(self) -> None:
@@ -109,99 +116,48 @@ class RoleDialog(QDialog):
             if widget is not None:
                 widget.deleteLater()
 
+        self._permission_checks.clear()
+
         for index, permission in enumerate(self.permissions):
             card = QFrame()
-            card.setObjectName("permissionCard")
+            card.setStyleSheet(
+                "QFrame { background: #11161f; border-radius: 12px; }"
+            )
             card_layout = QVBoxLayout(card)
-            card_layout.setContentsMargins(12, 12, 12, 12)
-            card_layout.setSpacing(10)
+            card_layout.setContentsMargins(12, 10, 12, 10)
+            card_layout.setSpacing(8)
 
-            title = QLabel(permission.display_name)
-            title.setObjectName("permissionCardTitle")
-            title.setWordWrap(True)
-            card_layout.addWidget(title)
-
-            hint = QLabel(permission.name or f"permission_{permission.id}")
-            hint.setObjectName("permissionCardHint")
-            hint.setWordWrap(True)
-            card_layout.addWidget(hint)
+            label = QLabel(permission.display_name)
+            label.setWordWrap(True)
+            label.setStyleSheet("background: transparent; border: none; color: #f8fafc; font-size: 12px; font-weight: 700;")
+            card_layout.addWidget(label)
 
             check = PrimeCheckBox("Enabled")
             self._permission_checks[permission.id] = check
             card_layout.addWidget(check)
-            card_layout.addStretch(1)
 
             row = index // 4
             col = index % 4
             self.permission_grid.addWidget(card, row, col)
 
-    def _apply_style(self) -> None:
-        self.setStyleSheet(
-            """
-            QDialog {
-                background: #171a1f;
-                color: #f1f5f9;
-            }
-            QLineEdit {
-                background: #232831;
-                border: 1px solid #3a424f;
-                border-radius: 8px;
-                color: #f8fafc;
-                padding: 8px 10px;
-                min-height: 24px;
-            }
-            QPushButton {
-                background: #2b3340;
-                border: 1px solid #425062;
-                border-radius: 8px;
-                color: #f8fafc;
-                padding: 7px 14px;
-                font-weight: 600;
-            }
-            QPushButton:hover {
-                background: #35507f;
-                border-color: #4d76bb;
-            }
-            QFrame#permissionCard {
-                background: #11161f;
-                border: 1px solid #293447;
-                border-radius: 12px;
-            }
-            QLabel#permissionCardTitle {
-                color: #f8fafc;
-                font-size: 12px;
-                font-weight: 700;
-            }
-            QLabel#permissionCardHint {
-                color: #8ea0bc;
-                font-size: 11px;
-            }
-            """
-        )
-
     def _selected_permission_ids(self) -> List[int]:
-        return [
-            permission_id
-            for permission_id, check in self._permission_checks.items()
-            if check.isChecked()
-        ]
+        return [pid for pid, check in self._permission_checks.items() if check.isChecked()]
 
     def _reset(self) -> None:
         if self.role is None:
             self.name_edit.clear()
             for check in self._permission_checks.values():
                 check.setChecked(False)
-            return
-
-        self.name_edit.setText(self.role.name)
-        selected_ids = set(self.role.permission_ids)
-        for permission_id, check in self._permission_checks.items():
-            check.setChecked(permission_id in selected_ids)
+        else:
+            self.name_edit.setText(self.role.name)
+            selected = set(self.role.permission_ids)
+            for pid, check in self._permission_checks.items():
+                check.setChecked(pid in selected)
 
     def _submit(self) -> None:
         name = self.name_edit.text().strip()
         if not name:
-            QMessageBox.warning(self, "Missing", "Role name is required.")
+            show_toast_message(self, "warn", "Missing", "Role name is required.")
             return
 
         payload = {
@@ -253,8 +209,7 @@ class RolePage(QWidget):
         toolbar.setSpacing(10)
         main_layout.addLayout(toolbar)
 
-        self.new_btn = QPushButton("+ New")
-        self.new_btn.setObjectName("roleNewBtn")
+        self.new_btn = PrimeButton("+ New", variant="primary", mode="filled", size="sm", width=90)
         self.new_btn.clicked.connect(self.open_create_dialog)
         toolbar.addWidget(self.new_btn)
 
@@ -288,18 +243,7 @@ class RolePage(QWidget):
             QWidget {
                 color: #f5f7fb;
             }
-            QPushButton#roleNewBtn {
-                background: #3b82f6;
-                border: none;
-                border-radius: 10px;
-                color: white;
-                font-size: 14px;
-                font-weight: 700;
-                padding: 9px 18px;
-            }
-            QPushButton#roleNewBtn:hover {
-                background: #2f6ce3;
-            }
+
             QLineEdit#roleSearchInput {
                 background: #2b2e34;
                 border: 1px solid #3a3e46;
@@ -416,6 +360,34 @@ class RolePage(QWidget):
         layout.addStretch(1)
         return wrapper
 
+    def _action_button(self, icon_name: str, tooltip: str, bg: str, border: str, size: int = 34) -> QToolButton:
+        btn = QToolButton()
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setFixedSize(size, size)
+        btn.setToolTip(tooltip)
+        btn.setStyleSheet(
+            f"""
+            QToolButton {{
+                background: {bg};
+                border: 1px solid {border};
+                border-radius: {size // 2}px;
+            }}
+            QToolButton:hover {{
+                border-color: #f8fafc;
+            }}
+            QToolButton:disabled {{
+                background: #2b2d33;
+                border-color: #3b3f47;
+            }}
+            """
+        )
+        icon_file = _icon_path(icon_name)
+        if os.path.isfile(icon_file):
+            icon_px = max(12, size - 16)
+            btn.setIcon(QIcon(icon_file))
+            btn.setIconSize(QSize(icon_px, icon_px))
+        return btn
+
     def _action_widget(self, row: Dict[str, Any]) -> QWidget:
         role = row.get("_role")
         wrapper = QWidget()
@@ -424,25 +396,14 @@ class RolePage(QWidget):
         layout.setSpacing(8)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        edit_btn = QToolButton()
-        edit_btn.setObjectName("roleIconBtn")
-        edit_btn.setToolTip("Edit role")
-        edit_icon = QIcon(_icon_path("edit.svg"))
-        if not edit_icon.isNull():
-            edit_btn.setIcon(edit_icon)
-        else:
-            edit_btn.setText("E")
+        if not isinstance(role, RoleResponse):
+            return wrapper
+
+        edit_btn = self._action_button("edit.svg", "Edit role", "#3578f6", "#4e8cff")
         edit_btn.clicked.connect(lambda: self._open_dialog(role))
         layout.addWidget(edit_btn)
 
-        delete_btn = QToolButton()
-        delete_btn.setObjectName("roleDeleteBtn")
-        delete_btn.setToolTip("Delete role")
-        delete_icon = QIcon(_icon_path("trash.svg"))
-        if not delete_icon.isNull():
-            delete_btn.setIcon(delete_icon)
-        else:
-            delete_btn.setText("D")
+        delete_btn = self._action_button("trash.svg", "Delete role", "#ef4444", "#ff6464")
         delete_btn.clicked.connect(lambda: self._confirm_delete(role))
         layout.addWidget(delete_btn)
         return wrapper
@@ -450,21 +411,22 @@ class RolePage(QWidget):
     def _confirm_delete(self, role: Any) -> None:
         if not isinstance(role, RoleResponse):
             return
-        result = QMessageBox.question(
-            self,
-            "Delete Record",
-            f"Are you sure to delete '{role.name}'?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        confirmed = PrimeConfirmDialog.ask(
+            parent=self,
+            title="Delete Role",
+            message=f"Are you sure you want to delete '{role.name}'? This action cannot be undone.",
+            ok_text="Delete",
+            cancel_text="Cancel",
         )
-        if result != QMessageBox.StandardButton.Yes:
+        if not confirmed:
             return
         self.role_store.delete_role(role.id)
 
     def _show_info(self, text: str) -> None:
-        QMessageBox.information(self, "Info", text)
+        show_toast_message(self, "info", "Info", text)
 
     def _show_error(self, text: str) -> None:
-        QMessageBox.critical(self, "Error", text)
+        show_toast_message(self, "error", "Error", text)
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -472,4 +434,3 @@ class RolePage(QWidget):
         path.addRect(QRectF(self.rect()))
         p.fillPath(path, QColor(Constants.DARK_BG))   # dark bg — cards float above it
         super().paintEvent(event)
-

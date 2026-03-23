@@ -4,19 +4,20 @@ import json
 import math
 import sys
 import os
+import urllib.parse
 from dataclasses import asdict
 from typing import Any, Dict, List, Optional
 from app.models.camera import Camera, CameraType
 from app.store.home.devices.camera_store import CameraStore
 from app.store.home.user.department_store import DepartmentStore
-from app.api.api_service import ApiService
 from app.utils.list import extract_dict_list
 from app.store.home.devices.access_control_store import AccessControlStore
 from app.store.home.devices.client_store import ClientStore
 from app.store.home.devices.camera_type_store import CameraTypeStore
 from app.store.auth import AuthStore
+from app.utils.env import resolve_http_base_url
 
-from PySide6.QtCore import QPointF, Qt, QTimer, Signal, QSize,QRectF
+from PySide6.QtCore import QObject, QPointF, Qt, QThread, QTimer, Signal, QSize, QRectF, QUrl
 from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
@@ -29,7 +30,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QMessageBox,
     QPushButton,
     QSizePolicy,
     QSpinBox,
@@ -39,8 +39,18 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from app.ui.button import PrimeButton
+from app.ui.confirm_dialog import PrimeConfirmDialog
+from app.ui.dialog import PrimeDialog
+from app.ui.input import PrimeInput
+
+from app.ui.select import PrimeSelect
 from app.ui.table import PrimeDataTable, PrimeTableColumn
+from app.ui.toast import show_toast_message
 from app.constants._init_ import Constants
+try:
+    from PySide6.QtWebSockets import QWebSocket
+except Exception:  # pragma: no cover - optional runtime dependency
+    QWebSocket = None
 
 _ICONS_DIR = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "../../../resources/icons")
@@ -57,6 +67,131 @@ if __package__ in (None, ""):
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
 
+
+
+def _base_http_url() -> str:
+    return resolve_http_base_url()
+
+
+class _ScanThread(QThread):
+    scan_done = Signal(list)
+    scan_error = Signal(str)
+
+    def __init__(self, service) -> None:
+        super().__init__()
+        self._service = service
+
+    def run(self) -> None:
+        try:
+            results = self._service.scan_network()
+            self.scan_done.emit(results)
+        except Exception as exc:
+            self.scan_error.emit(str(exc))
+
+
+def _monitor_ws_url() -> str:
+    raw = os.getenv("MONITOR_WS_URL", "").strip()
+    if raw:
+        return raw
+    parsed = urllib.parse.urlparse(_base_http_url())
+    host = parsed.netloc or parsed.path
+    scheme = "wss" if parsed.scheme == "https" else "ws"
+    return f"{scheme}://{host}/api/v1/monitor/ws"
+
+
+def _as_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "y", "on", "online", "connected", "up", "alive"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off", "offline", "down", "disconnected", "dead"}:
+            return False
+    return default
+
+
+def _pick_case_insensitive(container: Dict[str, Any], name: str) -> Any:
+    lowered = name.lower()
+    for key, value in container.items():
+        if str(key).strip().lower() == lowered:
+            return value
+    return None
+
+
+def _extract_camera_online(update: Dict[str, Any]) -> Optional[bool]:
+    nested = update.get("data") if isinstance(update.get("data"), dict) else {}
+    for key in ("online", "is_online", "connected", "alive", "status", "state", "is_live"):
+        for container in (update, nested):
+            if key in container:
+                return _as_bool(container.get(key))
+            value = _pick_case_insensitive(container, key)
+            if value is not None:
+                return _as_bool(value)
+    return None
+
+
+class CameraStatusWsClient(QObject):
+    statusUpdate = Signal(dict)
+    connectionChanged = Signal(bool)
+
+    def __init__(self, parent: Optional[QObject] = None) -> None:
+        super().__init__(parent)
+        self._url = _monitor_ws_url()
+        self._ws = QWebSocket() if QWebSocket is not None else None
+        self._closing = False
+        self._reconnect = QTimer(self)
+        self._reconnect.setSingleShot(True)
+        self._reconnect.setInterval(3000)
+        self._reconnect.timeout.connect(self.connect_socket)
+
+        if self._ws is not None:
+            self._ws.connected.connect(self._on_connected)
+            self._ws.disconnected.connect(self._on_disconnected)
+            self._ws.textMessageReceived.connect(self._on_message)
+
+    def connect_socket(self) -> None:
+        if self._ws is None:
+            self.connectionChanged.emit(False)
+            return
+        self._closing = False
+        self._ws.open(QUrl(self._url))
+
+    def close(self) -> None:
+        self._closing = True
+        self._reconnect.stop()
+        if self._ws is not None:
+            self._ws.close()
+
+    def _on_connected(self) -> None:
+        self.connectionChanged.emit(True)
+
+    def _on_disconnected(self) -> None:
+        self.connectionChanged.emit(False)
+        if not self._closing and not self._reconnect.isActive():
+            self._reconnect.start()
+
+    def _on_message(self, raw: str) -> None:
+        try:
+            message = json.loads(raw)
+        except Exception:
+            return
+        if str(message.get("type") or "").strip().lower() != "status_update":
+            return
+        payload = message.get("payload")
+        if isinstance(payload, dict):
+            self.statusUpdate.emit(payload)
 
 
 class MapDialog(QDialog):
@@ -94,7 +229,7 @@ class MapDialog(QDialog):
                 "lng": float(self.lng_edit.text().strip()),
             }
         except ValueError:
-            QMessageBox.warning(self, "Invalid", "Please enter valid coordinates.")
+            show_toast_message(self, "warn", "Invalid", "Please enter valid coordinates.")
             return
         super().accept()
 
@@ -121,30 +256,28 @@ class TextEditDialog(QDialog):
         self.accept()
 
 
-class ScanCameraResultsDialog(QDialog):
+class ScanCameraResultsDialog(PrimeDialog):
     def __init__(self, cameras: List[Dict[str, Any]], parent: Optional[QWidget] = None) -> None:
-        super().__init__(parent)
+        super().__init__(
+            title="Scanned Cameras",
+            parent=parent,
+            width=760,
+            height=520,
+            show_footer=True,
+            cancel_text="Close",
+        )
+        self.ok_button.hide()
         self.selected_camera: Optional[Dict[str, Any]] = None
         self._cameras = cameras
-
-        self.setWindowTitle("Scanned Cameras")
-        self.resize(760, 480)
-
-        root = QVBoxLayout(self)
-        root.setContentsMargins(16, 16, 16, 16)
-        root.setSpacing(12)
 
         info_label = QLabel(
             f"{len(cameras)} camera(s) found on the network. Choose one to fill the form."
         )
         info_label.setWordWrap(True)
-        info_label.setStyleSheet("color: #cbd5e1;")
-        root.addWidget(info_label)
 
         self.search_edit = QLineEdit()
         self.search_edit.setPlaceholderText("Search by IP address or manufacturer...")
         self.search_edit.textChanged.connect(self._on_search_changed)
-        root.addWidget(self.search_edit)
 
         self.table = PrimeDataTable(page_size=8, page_size_options=[8, 16, 32], row_height=54, show_footer=True)
         self.table.set_columns(
@@ -170,17 +303,15 @@ class ScanCameraResultsDialog(QDialog):
             ]
         )
         self.table.set_rows(self._cameras)
-        root.addWidget(self.table, 1)
 
-        footer = QHBoxLayout()
-        footer.setContentsMargins(0, 0, 0, 0)
-        footer.addStretch(1)
-
-        close_btn = PrimeButton("Close", "secondary", size="sm")
-        close_btn.setFixedWidth(110)
-        close_btn.clicked.connect(self.reject)
-        footer.addWidget(close_btn)
-        root.addLayout(footer)
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(12)
+        content_layout.addWidget(info_label)
+        content_layout.addWidget(self.search_edit)
+        content_layout.addWidget(self.table, 1)
+        self.set_content(content)
 
     def _on_search_changed(self, text: str) -> None:
         self.table.set_filter_text(text)
@@ -500,31 +631,40 @@ class RoiCanvas(QWidget):
         return None
 
 
-class CameraRoiDialog(QDialog):
+class CameraRoiDialog(PrimeDialog):
     def __init__(
         self,
         camera: Camera,
         frame_text: str,
         parent: Optional[QWidget] = None,
     ) -> None:
-        super().__init__(parent)
-        self.roi_value = str(camera.roi or "")
-        self.setWindowTitle(f"ROI Setting - {camera.name}")
-        self.resize(940, 820)
+        super().__init__(
+            title=f"ROI Setting - {camera.name}",
+            parent=parent,
+            width=940,
+            height=820,
+            show_footer=True,
+            ok_text="Save ROI",
+            cancel_text="Cancel",
+        )
         self.setMinimumSize(900, 760)
+        self.roi_value = str(camera.roi or "")
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(18, 18, 18, 18)
-        root.setSpacing(12)
+        self.ok_button.clicked.disconnect()
+        self.ok_button.clicked.connect(self._save)
 
-        title = QLabel(f"ROI Editor for {camera.name}")
-        title.setStyleSheet("color:#f8fafc; font-size:20px; font-weight:700;")
-        root.addWidget(title)
+        # Add status label and Reset button to the footer
+        footer_layout = self.footer_widget.layout()
+        self.status_label = QLabel()
+        self.status_label.setWordWrap(True)
+        self.reset_btn = PrimeButton("Reset", variant="warning", mode="outline", size="sm")
+        # footer_layout: [stretch(0), cancel(1), ok(2)]
+        footer_layout.insertWidget(0, self.status_label, 1)
+        footer_layout.insertWidget(2, self.reset_btn)
 
         hint = QLabel("Click to add points, drag a point to reposition it, then save the normalized ROI.")
         hint.setWordWrap(True)
         hint.setStyleSheet("color:#94a3b8; font-size:13px;")
-        root.addWidget(hint)
 
         canvas_frame = QFrame()
         canvas_frame.setObjectName("roiCanvasFrame")
@@ -536,56 +676,24 @@ class CameraRoiDialog(QDialog):
         self.canvas.set_frame_text(frame_text)
         self.canvas.set_points(_parse_normalized_points(camera.roi))
         self.canvas.points_changed.connect(self._update_status)
-        canvas_layout.addWidget(self.canvas, 0, Qt.AlignmentFlag.AlignCenter)
-        root.addWidget(canvas_frame, 1)
-
-        footer = QHBoxLayout()
-        footer.setSpacing(12)
-        root.addLayout(footer)
-
-        self.status_label = QLabel()
-        self.status_label.setWordWrap(True)
-        footer.addWidget(self.status_label, 1)
-
-        self.reset_btn = QPushButton("Reset")
         self.reset_btn.clicked.connect(self.canvas.clear_points)
-        footer.addWidget(self.reset_btn)
+        canvas_layout.addWidget(self.canvas, 0, Qt.AlignmentFlag.AlignCenter)
 
-        cancel_btn = QPushButton("Cancel")
-        cancel_btn.clicked.connect(self.reject)
-        footer.addWidget(cancel_btn)
-
-        self.save_btn = QPushButton("Save ROI")
-        self.save_btn.clicked.connect(self._save)
-        footer.addWidget(self.save_btn)
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(12)
+        content_layout.addWidget(hint)
+        content_layout.addWidget(canvas_frame, 1)
+        self.set_content(content)
 
         self.setStyleSheet(
-            """
-            QDialog {
-                background: #171a1f;
-                color: #f1f5f9;
-            }
+            self.styleSheet()
+            + """
             QFrame#roiCanvasFrame {
                 background: #0f172a;
                 border: 1px solid #334155;
                 border-radius: 12px;
-            }
-            QPushButton {
-                background: #2b3340;
-                border: 1px solid #425062;
-                border-radius: 8px;
-                color: #f8fafc;
-                padding: 8px 16px;
-                font-weight: 600;
-            }
-            QPushButton:hover {
-                background: #35507f;
-                border-color: #4d76bb;
-            }
-            QPushButton:disabled {
-                background: #232831;
-                color: #7c8797;
-                border-color: #303744;
             }
             """
         )
@@ -608,12 +716,12 @@ class CameraRoiDialog(QDialog):
             self.status_label.setStyleSheet("color:#86efac; font-size:13px; font-weight:700;")
 
         self.reset_btn.setEnabled(point_count > 0)
-        self.save_btn.setEnabled(self.canvas.has_frame() and point_count >= 3)
+        self.ok_button.setEnabled(self.canvas.has_frame() and point_count >= 3)
 
     def _save(self) -> None:
         points = self.canvas.points()
         if len(points) < 3:
-            QMessageBox.warning(self, "ROI", "Please select at least 3 points to define an ROI area.")
+            show_toast_message(self, "warn", "ROI", "Please select at least 3 points to define an ROI area.")
             return
         self.roi_value = json.dumps(points, separators=(",", ":"))
         self.accept()
@@ -772,31 +880,40 @@ class CountLineCanvas(RoiCanvas):
         )
 
 
-class CameraCountLineDialog(QDialog):
+class CameraCountLineDialog(PrimeDialog):
     def __init__(
         self,
         camera: Camera,
         frame_text: str,
         parent: Optional[QWidget] = None,
     ) -> None:
-        super().__init__(parent)
-        self.line_value = str(camera.face_count_line or "")
-        self.setWindowTitle(f"Count Line Setting - {camera.name}")
-        self.resize(940, 820)
+        super().__init__(
+            title=f"Count Line Setting - {camera.name}",
+            parent=parent,
+            width=940,
+            height=820,
+            show_footer=True,
+            ok_text="Save Count Line",
+            cancel_text="Cancel",
+        )
         self.setMinimumSize(900, 760)
+        self.line_value = str(camera.face_count_line or "")
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(18, 18, 18, 18)
-        root.setSpacing(12)
+        self.ok_button.clicked.disconnect()
+        self.ok_button.clicked.connect(self._save)
 
-        title = QLabel(f"Count Line Editor for {camera.name}")
-        title.setStyleSheet("color:#f8fafc; font-size:20px; font-weight:700;")
-        root.addWidget(title)
+        # Add status label and Reset button to the footer
+        footer_layout = self.footer_widget.layout()
+        self.status_label = QLabel()
+        self.status_label.setWordWrap(True)
+        self.reset_btn = PrimeButton("Reset", variant="warning", mode="outline", size="sm")
+        # footer_layout: [stretch(0), cancel(1), ok(2)]
+        footer_layout.insertWidget(0, self.status_label, 1)
+        footer_layout.insertWidget(2, self.reset_btn)
 
         hint = QLabel("Select 2 points for the count line, then optionally 2 points for the direction line.")
         hint.setWordWrap(True)
         hint.setStyleSheet("color:#94a3b8; font-size:13px;")
-        root.addWidget(hint)
 
         canvas_frame = QFrame()
         canvas_frame.setObjectName("countLineCanvasFrame")
@@ -808,56 +925,24 @@ class CameraCountLineDialog(QDialog):
         self.canvas.set_frame_text(frame_text)
         self.canvas.set_points(_parse_line_points(camera.face_count_line))
         self.canvas.points_changed.connect(self._update_status)
-        canvas_layout.addWidget(self.canvas, 0, Qt.AlignmentFlag.AlignCenter)
-        root.addWidget(canvas_frame, 1)
-
-        footer = QHBoxLayout()
-        footer.setSpacing(12)
-        root.addLayout(footer)
-
-        self.status_label = QLabel()
-        self.status_label.setWordWrap(True)
-        footer.addWidget(self.status_label, 1)
-
-        self.reset_btn = QPushButton("Reset")
         self.reset_btn.clicked.connect(self.canvas.clear_points)
-        footer.addWidget(self.reset_btn)
+        canvas_layout.addWidget(self.canvas, 0, Qt.AlignmentFlag.AlignCenter)
 
-        cancel_btn = QPushButton("Cancel")
-        cancel_btn.clicked.connect(self.reject)
-        footer.addWidget(cancel_btn)
-
-        self.save_btn = QPushButton("Save Count Line")
-        self.save_btn.clicked.connect(self._save)
-        footer.addWidget(self.save_btn)
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(12)
+        content_layout.addWidget(hint)
+        content_layout.addWidget(canvas_frame, 1)
+        self.set_content(content)
 
         self.setStyleSheet(
-            """
-            QDialog {
-                background: #171a1f;
-                color: #f1f5f9;
-            }
+            self.styleSheet()
+            + """
             QFrame#countLineCanvasFrame {
                 background: #0f172a;
                 border: 1px solid #334155;
                 border-radius: 12px;
-            }
-            QPushButton {
-                background: #2b3340;
-                border: 1px solid #425062;
-                border-radius: 8px;
-                color: #f8fafc;
-                padding: 8px 16px;
-                font-weight: 600;
-            }
-            QPushButton:hover {
-                background: #35507f;
-                border-color: #4d76bb;
-            }
-            QPushButton:disabled {
-                background: #232831;
-                color: #7c8797;
-                border-color: #303744;
             }
             """
         )
@@ -886,13 +971,14 @@ class CameraCountLineDialog(QDialog):
             self.status_label.setStyleSheet("color:#86efac; font-size:13px; font-weight:700;")
 
         self.reset_btn.setEnabled(point_count > 0)
-        self.save_btn.setEnabled(self.canvas.has_frame() and point_count in {2, 4})
+        self.ok_button.setEnabled(self.canvas.has_frame() and point_count in {2, 4})
 
     def _save(self) -> None:
         points = self.canvas.points()
         if len(points) not in {2, 4}:
-            QMessageBox.warning(
+            show_toast_message(
                 self,
+                "warn",
                 "Count Line",
                 "Please select 2 points for the count line, and optionally 2 more for the direction line.",
             )
@@ -918,7 +1004,7 @@ class CameraSettingsDialog(QDialog):
         layout.addWidget(close_btn)
 
 
-class CameraTypeFormDialog(QDialog):
+class CameraTypeFormDialog(PrimeDialog):
     submitted = Signal(dict, bool)
 
     def __init__(
@@ -926,36 +1012,35 @@ class CameraTypeFormDialog(QDialog):
         camera_type: Optional[CameraType] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
-        super().__init__(parent)
         self.camera_type = camera_type
         self.is_edit_mode = camera_type is not None
+        title = "Edit Camera Type" if self.is_edit_mode else "Add Camera Type"
+        ok_text = "Update Type" if self.is_edit_mode else "Create Type"
 
-        self.setWindowTitle("Edit Camera Type" if self.is_edit_mode else "Add Camera Type")
-        self.resize(920, 520)
+        super().__init__(
+            title=title,
+            parent=parent,
+            width=600,
+            height=520,
+            show_footer=True,
+            ok_text=ok_text,
+            cancel_text="Cancel",
+        )
         self.setMinimumSize(860, 480)
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(18, 18, 18, 18)
-        root.setSpacing(14)
+        self.ok_button.clicked.disconnect()
+        self.ok_button.clicked.connect(self._submit)
+
+        self.name_edit = PrimeInput(placeholder_text="Camera type name")
+        self.protocol_edit = PrimeInput(placeholder_text="rtsp")
+        self.main_url_edit = PrimeInput(placeholder_text="/Streaming/Channels/101")
+        self.sub_url_edit = PrimeInput(placeholder_text="/Streaming/Channels/102")
+        self.ptz_url_edit = PrimeInput(placeholder_text="/ISAPI/PTZCtrl/channels/1/continuous")
+        self.network_url_edit = PrimeInput(placeholder_text="/ISAPI/System/Network/interfaces/1")
 
         form = QFormLayout()
         form.setContentsMargins(0, 0, 0, 0)
         form.setSpacing(10)
-        root.addLayout(form)
-
-        self.name_edit = QLineEdit()
-        self.protocol_edit = QLineEdit()
-        self.main_url_edit = QLineEdit()
-        self.sub_url_edit = QLineEdit()
-        self.ptz_url_edit = QLineEdit()
-        self.network_url_edit = QLineEdit()
-
-        self.protocol_edit.setPlaceholderText("rtsp")
-        self.main_url_edit.setPlaceholderText("/Streaming/Channels/101")
-        self.sub_url_edit.setPlaceholderText("/Streaming/Channels/102")
-        self.ptz_url_edit.setPlaceholderText("/ISAPI/PTZCtrl/channels/1/continuous")
-        self.network_url_edit.setPlaceholderText("/ISAPI/System/Network/interfaces/1")
-
         form.addRow("Name *", self.name_edit)
         form.addRow("Protocol", self.protocol_edit)
         form.addRow("Main URL", self.main_url_edit)
@@ -963,46 +1048,12 @@ class CameraTypeFormDialog(QDialog):
         form.addRow("PTZ URL", self.ptz_url_edit)
         form.addRow("Network URL", self.network_url_edit)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
-        save_btn = QPushButton("Update Type" if self.is_edit_mode else "Create Type")
-        buttons.addButton(save_btn, QDialogButtonBox.ButtonRole.AcceptRole)
-        buttons.rejected.connect(self.reject)
-        save_btn.clicked.connect(self._submit)
-        root.addWidget(buttons)
-
-        self.setStyleSheet(
-            """
-            QDialog {
-                background: #171a1f;
-                color: #f1f5f9;
-            }
-            QLineEdit {
-                background: #232831;
-                border: 1px solid #3a424f;
-                border-radius: 8px;
-                color: #f8fafc;
-                padding: 8px 10px;
-                min-height: 24px;
-            }
-            QLabel {
-                color: #dbe4f3;
-                font-size: 13px;
-                font-weight: 600;
-            }
-            QPushButton {
-                background: #2b3340;
-                border: 1px solid #425062;
-                border-radius: 8px;
-                color: #f8fafc;
-                padding: 7px 14px;
-                font-weight: 600;
-            }
-            QPushButton:hover {
-                background: #35507f;
-                border-color: #4d76bb;
-            }
-            """
-        )
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(14)
+        content_layout.addLayout(form)
+        self.set_content(content)
 
         if self.camera_type is not None:
             self._load_camera_type(self.camera_type)
@@ -1030,105 +1081,76 @@ class CameraTypeFormDialog(QDialog):
 
     def _submit(self) -> None:
         if not self.name_edit.text().strip():
-            QMessageBox.warning(self, "Validation", "Camera type name is required.")
+            show_toast_message(self, "warn", "Validation", "Camera type name is required.")
             return
         self.submitted.emit(self.payload(), self.is_edit_mode)
 
 
-class CameraTypeManagerDialog(QDialog):
+class CameraTypeManagerDialog(PrimeDialog):
     def __init__(
         self,
         camera_type_store: CameraTypeStore,
         parent: Optional[QWidget] = None,
     ) -> None:
-        super().__init__(parent)
-        self.camera_type_store = camera_type_store
-
-        self.setWindowTitle("Camera Types")
-        self.resize(1380, 840)
+        super().__init__(
+            title="Camera Types",
+            parent=parent,
+            width=1380,
+            height=840,
+            show_footer=True,
+            cancel_text="Close",
+        )
+        self.ok_button.hide()
         self.setMinimumSize(1240, 760)
+        self.camera_type_store = camera_type_store
 
         self.camera_type_store.changed.connect(self._populate_table)
         self.camera_type_store.error.connect(self._show_error)
         self.camera_type_store.success.connect(self._show_info)
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(18, 18, 18, 18)
-        root.setSpacing(14)
-
-        toolbar = QHBoxLayout()
-        toolbar.setSpacing(10)
-        root.addLayout(toolbar)
-
-        self.new_btn = QPushButton("+ New Type")
+        self.new_btn = PrimeButton("+ New Type", variant="primary", size="sm")
         self.new_btn.clicked.connect(self.open_create_dialog)
-        toolbar.addWidget(self.new_btn)
 
-        toolbar.addStretch(1)
-
-        self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("Search camera types...")
+        self.search_edit = PrimeInput(placeholder_text="Search camera types...")
         self.search_edit.setMaximumWidth(320)
         self.search_edit.textChanged.connect(self._on_search_changed)
-        toolbar.addWidget(self.search_edit)
+
+        toolbar = QWidget()
+        toolbar_layout = QHBoxLayout(toolbar)
+        toolbar_layout.setContentsMargins(0, 0, 0, 0)
+        toolbar_layout.setSpacing(10)
+        toolbar_layout.addWidget(self.new_btn)
+        toolbar_layout.addStretch(1)
+        toolbar_layout.addWidget(self.search_edit)
 
         self.table = PrimeDataTable(page_size=10, row_height=54, show_footer=True)
         self.table.set_columns(
             [
-                PrimeTableColumn("name", "Name", width=160),
-                PrimeTableColumn("protocol", "Protocol", width=110),
-                PrimeTableColumn("main_url", "Main URL", width=180),
-                PrimeTableColumn("sub_url", "Sub URL", width=180),
-                PrimeTableColumn("ptz_url", "PTZ URL", width=180),
-                PrimeTableColumn("network_url", "Network URL", stretch=True),
+                PrimeTableColumn("name", "Name", width=180),
+                PrimeTableColumn("protocol", "Protocol", width=100),
+                PrimeTableColumn("main_url", "Main URL", width=240),
+                PrimeTableColumn("sub_url", "Sub URL", width=240),
+                PrimeTableColumn("ptz_url", "PTZ URL", width=240),
+                PrimeTableColumn("network_url", "Network URL", width=240),
                 PrimeTableColumn(
                     "actions",
-                    "Actions",
+                    "",
                     sortable=False,
                     searchable=False,
-                    width=134,
-                    alignment=Qt.AlignLeft | Qt.AlignVCenter,
+                    width=80,
+                    alignment=Qt.AlignCenter,
                 ),
             ]
         )
         self.table.set_cell_widget_factory("actions", self._camera_type_action_cell)
-        root.addWidget(self.table, 1)
 
-        controls = QHBoxLayout()
-        controls.addStretch(1)
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(self.accept)
-        controls.addWidget(close_btn)
-        root.addLayout(controls)
-
-        self.setStyleSheet(
-            """
-            QDialog {
-                background: #171a1f;
-                color: #f1f5f9;
-            }
-            QLineEdit {
-                background: #232831;
-                border: 1px solid #3a424f;
-                border-radius: 8px;
-                color: #f8fafc;
-                padding: 8px 10px;
-                min-height: 24px;
-            }
-            QPushButton {
-                background: #2b3340;
-                border: 1px solid #425062;
-                border-radius: 8px;
-                color: #f8fafc;
-                padding: 7px 14px;
-                font-weight: 600;
-            }
-            QPushButton:hover {
-                background: #35507f;
-                border-color: #4d76bb;
-            }
-            """
-        )
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(14)
+        content_layout.addWidget(toolbar)
+        content_layout.addWidget(self.table, 1)
+        self.set_content(content, fill_height=True)
 
         self.camera_type_store.load()
 
@@ -1157,40 +1179,51 @@ class CameraTypeManagerDialog(QDialog):
     def _on_search_changed(self, text: str) -> None:
         self.table.set_filter_text(text)
 
-    def _action_button(self, text: str, bg: str, border: str) -> QPushButton:
-        btn = QPushButton(text)
+    def _icon_tool_btn(
+        self,
+        icon_name: str,
+        tooltip: str,
+        bg: str,
+        border: str,
+        size: int = 34,
+    ) -> QToolButton:
+        btn = QToolButton()
+        btn.setToolTip(tooltip)
         btn.setCursor(Qt.PointingHandCursor)
-        btn.setFixedHeight(28)
-        btn.setStyleSheet(
-            f"""
-            QPushButton {{
+        btn.setFixedSize(size, size)
+        icon_path = os.path.join(_ICONS_DIR, icon_name)
+        if os.path.exists(icon_path):
+            btn.setIcon(QIcon(icon_path))
+            icon_px = max(12, size - 16)
+            btn.setIconSize(QSize(icon_px, icon_px))
+        btn.setStyleSheet(f"""
+            QToolButton {{
                 background: {bg};
                 border: 1px solid {border};
-                border-radius: 8px;
-                color: #f8fafc;
-                padding: 4px 10px;
-                font-size: 12px;
-                font-weight: 700;
+                border-radius: {size // 2}px;
             }}
-            QPushButton:hover {{
+            QToolButton:hover {{
                 border-color: #f8fafc;
             }}
-            """
-        )
+            QToolButton:disabled {{
+                background: #2b2d33;
+                border-color: #3b3f47;
+            }}
+        """)
         return btn
 
     def _action_widget(self, camera_type: CameraType) -> QWidget:
         box = QWidget()
         layout = QHBoxLayout(box)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
+        layout.setSpacing(4)
         layout.setAlignment(Qt.AlignCenter)
 
-        edit_btn = self._action_button("Edit", "#35507f", "#4d76bb")
+        edit_btn = self._icon_tool_btn("edit.svg", "Edit", "#3578f6", "#4e8cff")
         edit_btn.clicked.connect(lambda: self.open_edit_dialog(camera_type))
         layout.addWidget(edit_btn)
 
-        delete_btn = self._action_button("Delete", "#8b2f3f", "#bb4d62")
+        delete_btn = self._icon_tool_btn("trash.svg", "Delete", "#ef4444", "#ff6464")
         delete_btn.clicked.connect(lambda: self.handle_delete(camera_type))
         layout.addWidget(delete_btn)
         return box
@@ -1248,22 +1281,24 @@ class CameraTypeManagerDialog(QDialog):
             dialog.accept()
 
     def handle_delete(self, camera_type: CameraType) -> None:
-        result = QMessageBox.question(
-            self,
-            "Delete Camera Type",
-            f"Are you sure you want to delete '{camera_type.name}'?",
+        confirmed = PrimeConfirmDialog.ask(
+            parent=self,
+            title="Delete Camera Type",
+            message=f"Are you sure you want to delete '{camera_type.name}'?",
+            ok_text="Delete",
+            cancel_text="Cancel",
         )
-        if result == QMessageBox.Yes:
+        if confirmed:
             self.camera_type_store.delete_camera_type(camera_type.id)
 
     def _show_info(self, text: str) -> None:
-        QMessageBox.information(self, "Camera Types", text)
+        show_toast_message(self, "info", "Camera Types", text)
 
     def _show_error(self, text: str) -> None:
-        QMessageBox.critical(self, "Camera Types", text)
+        show_toast_message(self, "error", "Camera Types", text)
 
 
-class CameraFormDialog(QDialog):
+class CameraFormDialog(PrimeDialog):
     submitted = Signal(dict, bool)
     open_roi = Signal(int)
     open_count_line = Signal(int)
@@ -1277,7 +1312,14 @@ class CameraFormDialog(QDialog):
         camera: Optional[Camera] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
-        super().__init__(parent)
+        super().__init__(
+            title="Edit Camera" if camera is not None else "Add New Camera",
+            parent=parent,
+            width=1100,
+            height=780,
+            ok_text="Update Camera" if camera is not None else "Add Camera",
+            cancel_text="Cancel",
+        )
         self.auth_store = auth_store
         self.client_store = client_store
         self.camera_type_store = camera_type_store
@@ -1285,51 +1327,32 @@ class CameraFormDialog(QDialog):
         self.camera = camera
         self.is_edit_mode = camera is not None
         self.setObjectName("cameraFormDialog")
-        self.setWindowTitle("Edit Camera" if self.is_edit_mode else "Add New Camera")
-        self.resize(1100, 780)
         self.setStyleSheet(
-            """
-            QDialog#cameraFormDialog {
-                background: #222222;
-                color: #f1f5f9;
+            self.styleSheet()
+            + """
+            QWidget#cameraFormBody {
+                background: transparent;
             }
-            QGroupBox {
+            QGroupBox#cameraSectionBox {
                 background: #222222;
-                color: #f8fafc;
                 border: 1px solid #3a424f;
                 border-radius: 10px;
-                margin-top: 14px;
-                padding-top: 12px;
+                padding: 0;
             }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 12px;
-                padding: 0 6px;
-                color: #f8fafc;
-                background: #222222;
+            QLabel#cameraSectionLabel {
+                color: #dbe4f3;
+                font-size: 13px;
+                font-weight: 600;
             }
             QLabel {
                 color: #dbe4f3;
                 font-size: 13px;
                 font-weight: 600;
             }
-            QLineEdit,
-            QComboBox,
-            QAbstractSpinBox {
-                background: #222222;
-                border: 1px solid #4a5563;
-                border-radius: 8px;
-                color: #f8fafc;
-                padding: 8px 10px;
-                min-height: 24px;
-            }
-            QLineEdit:read-only {
-                color: #cbd5e1;
-            }
-            QLineEdit:focus,
-            QComboBox:focus,
-            QAbstractSpinBox:focus {
-                border: 1px solid #60a5fa;
+            QLabel#cameraFieldLabel {
+                color: #94a3b8;
+                font-size: 12px;
+                font-weight: 500;
             }
             QComboBox::drop-down {
                 border: none;
@@ -1344,19 +1367,41 @@ class CameraFormDialog(QDialog):
             }
             """
         )
+        try:
+            self.ok_button.clicked.disconnect()
+        except (RuntimeError, TypeError):
+            pass
+        self.ok_button.clicked.connect(self._submit)
+        self.ok_button.setFixedWidth(140)
+        self.cancel_button.setFixedWidth(110)
 
-        root = QVBoxLayout(self)
+        body_widget = QWidget()
+        body_widget.setObjectName("cameraFormBody")
+        root = QVBoxLayout(body_widget)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(14)
+        self.set_content(body_widget)
 
-        top_box = QGroupBox("General")
-        top_layout = QGridLayout(top_box)
+        top_box, top_container = self._create_section_box("General")
+        top_layout = QGridLayout()
+        top_layout.setContentsMargins(0, 0, 0, 0)
+        top_layout.setHorizontalSpacing(12)
+        top_layout.setVerticalSpacing(10)
+        top_container.addLayout(top_layout)
         root.addWidget(top_box)
 
-        self.name_edit = QLineEdit()
+        self.name_edit = PrimeInput()
+        self.name_edit.setPlaceholderText("Enter camera name")
         self.ai_combo = self._bool_combo()
-        self.process_type_combo = QComboBox()
-        self.process_type_combo.addItem("Face Recognition", "face")
-        self.process_type_combo.addItem("License Plate Recognition", "lpr")
-        self.process_type_combo.currentIndexChanged.connect(self._toggle_type_fields)
+        self.process_type_combo = PrimeSelect(
+            options=[
+                {"label": "Face Recognition", "value": "face"},
+                {"label": "License Plate Recognition", "value": "lpr"},
+            ],
+            placeholder="Select camera type",
+        )
+        self.process_type_combo.set_value("lpr")
+        self.process_type_combo.value_changed.connect(lambda _value: self._toggle_type_fields())
 
         top_layout.addWidget(QLabel("Camera Name *"), 0, 0)
         top_layout.addWidget(self.name_edit, 1, 0)
@@ -1366,61 +1411,64 @@ class CameraFormDialog(QDialog):
         top_layout.addWidget(self.process_type_combo, 1, 2)
 
         body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(14)
         root.addLayout(body, 1)
 
         # Left column
-        left_box = QGroupBox("Camera Connection")
-        left = QFormLayout(left_box)
+        left_box, left_container = self._create_section_box("Camera Connection")
+        left_fields = QVBoxLayout()
+        left_fields.setContentsMargins(0, 0, 0, 0)
+        left_fields.setSpacing(10)
+        left_container.addLayout(left_fields)
         body.addWidget(left_box, 1)
 
-        self.camera_ip_edit = QLineEdit()
-        self.camera_port_spin = QSpinBox()
-        self.camera_port_spin.setMaximum(65535)
-        self.camera_port_spin.setValue(554)
-        self.camera_username_edit = QLineEdit()
-        self.camera_password_edit = QLineEdit()
+        self.camera_ip_edit = PrimeInput()
+        self.camera_ip_edit.setPlaceholderText("Enter camera IP")
+        self.camera_port_spin = PrimeInput(
+            type="number",
+            minimum=1,
+            maximum=65535,
+            decimals=0,
+            value=554,
+            placeholder_text="Enter port",
+        )
+        self.camera_username_edit = PrimeInput()
+        self.camera_username_edit.setPlaceholderText("Enter username")
+        self.camera_password_edit = PrimeInput()
+        self.camera_password_edit.setPlaceholderText("Enter password")
         self.camera_password_edit.setEchoMode(QLineEdit.Password)
-        self.camera_type_combo = QComboBox()
-        self.camera_type_combo.addItem("", None)
-        for item in self.camera_type_store.camera_types:
-            self.camera_type_combo.addItem(item.name, item.id)
+        self.camera_type_combo = PrimeSelect(placeholder="Select camera brand")
+        self.camera_type_combo.set_options(
+            [{"label": item.name, "value": item.id} for item in self.camera_type_store.camera_types]
+        )
 
-        self.access_control_combo = QComboBox()
-        self.access_control_combo.addItem("", None)
-        for item in self.access_control_store.access_controls:
-            self.access_control_combo.addItem(item.name, item.id)
-        self.access_control_combo.currentIndexChanged.connect(self._refresh_doors)
+        self.access_control_combo = PrimeSelect(placeholder="Select access control")
+        self.access_control_combo.set_options(
+            [{"label": item.name, "value": item.id} for item in self.access_control_store.access_controls]
+        )
+        self.access_control_combo.value_changed.connect(lambda _value: self._refresh_doors())
 
-        self.door_combo = QComboBox()
-        self.map_pos_edit = QLineEdit()
-        self.map_pos_edit.setReadOnly(True)
-        self.latitude_edit = QLineEdit()
-        self.latitude_edit.setReadOnly(True)
-        self.longitude_edit = QLineEdit()
-        self.longitude_edit.setReadOnly(True)
-        map_btn = QPushButton("Select Location")
-        map_btn.clicked.connect(self._select_location)
+        self.door_combo = PrimeSelect(placeholder="Select door")
 
-        left.addRow("Camera IP *", self.camera_ip_edit)
-        left.addRow("Camera Port", self.camera_port_spin)
-        left.addRow("Username", self.camera_username_edit)
-        left.addRow("Password", self.camera_password_edit)
-        left.addRow("Camera Brand", self.camera_type_combo)
-        left.addRow("Access Control", self.access_control_combo)
-        left.addRow("Door Number", self.door_combo)
-        left.addRow("Map Position", self.map_pos_edit)
-        left.addRow("Latitude", self.latitude_edit)
-        left.addRow("Longitude", self.longitude_edit)
-        left.addRow("", map_btn)
+        left_fields.addWidget(self._field_block("Camera IP *", self.camera_ip_edit))
+        left_fields.addWidget(self._field_block("Camera Port", self.camera_port_spin))
+        left_fields.addWidget(self._field_block("Username", self.camera_username_edit))
+        left_fields.addWidget(self._field_block("Password", self.camera_password_edit))
+        left_fields.addWidget(self._field_block("Camera Brand", self.camera_type_combo))
+        left_fields.addWidget(self._field_block("Access Control", self.access_control_combo))
+        left_fields.addWidget(self._field_block("Door Number", self.door_combo))
 
-        # Right column
-        right_box = QGroupBox("Processing & Clients")
-        right = QFormLayout(right_box)
+        right_box, right_container = self._create_section_box("Processing & Clients")
+        right_fields = QVBoxLayout()
+        right_fields.setContentsMargins(0, 0, 0, 0)
+        right_fields.setSpacing(10)
+        right_container.addLayout(right_fields)
         body.addWidget(right_box, 1)
 
-        self.client_1_combo = QComboBox()
-        self.client_2_combo = QComboBox()
-        self.client_3_combo = QComboBox()
+        self.client_1_combo = PrimeSelect(placeholder="Select processing client")
+        self.client_2_combo = PrimeSelect(placeholder="Select failover client")
+        self.client_3_combo = PrimeSelect(placeholder="Select recording client")
         self._fill_client_combo(self.client_1_combo, "process")
         self._fill_client_combo(self.client_2_combo, "process")
         self._fill_client_combo(self.client_3_combo, "record")
@@ -1430,126 +1478,142 @@ class CameraFormDialog(QDialog):
         self.is_record_combo = self._bool_combo()
         self.is_ptz_combo = self._bool_combo()
         self.forward_stream_combo = self._bool_combo()
-        self.fps_delay_spin = QSpinBox()
-        self.fps_delay_spin.setMaximum(1000)
-        self.fps_delay_spin.setValue(5)
+        self.fps_delay_spin = PrimeInput(
+            type="number",
+            minimum=0,
+            maximum=1000,
+            decimals=0,
+            value=5,
+            placeholder_text="FPS delay",
+        )
 
-        right.addRow("Processing Client *", self.client_1_combo)
-        right.addRow("Failover Client", self.client_2_combo)
-        right.addRow("Recording Client", self.client_3_combo)
-        right.addRow("Enable Processing", self.is_process_combo)
-        right.addRow("Enable Live Stream", self.is_live_combo)
-        right.addRow("Enable Recording", self.is_record_combo)
-        right.addRow("PTZ", self.is_ptz_combo)
-        right.addRow("FPS Delay", self.fps_delay_spin)
-        right.addRow("Forward to Server", self.forward_stream_combo)
+        right_fields.addWidget(self._field_block("Processing Client *", self.client_1_combo))
+        right_fields.addWidget(self._field_block("Failover Client", self.client_2_combo))
+        right_fields.addWidget(self._field_block("Recording Client", self.client_3_combo))
+        right_fields.addWidget(self._field_block("Enable Processing", self.is_process_combo))
+        right_fields.addWidget(self._field_block("Enable Live Stream", self.is_live_combo))
+        right_fields.addWidget(self._field_block("Enable Recording", self.is_record_combo))
+        right_fields.addWidget(self._field_block("PTZ", self.is_ptz_combo))
+        right_fields.addWidget(self._field_block("FPS Delay", self.fps_delay_spin))
+        right_fields.addWidget(self._field_block("Forward to Server", self.forward_stream_combo))
 
-        self.face_box = QGroupBox("Face Recognition Settings")
-        face_form = QFormLayout(self.face_box)
+        self.face_box, face_container = self._create_section_box("Face Recognition Settings")
+        face_grid = QGridLayout()
+        face_grid.setContentsMargins(0, 0, 0, 0)
+        face_grid.setHorizontalSpacing(12)
+        face_grid.setVerticalSpacing(10)
+        face_container.addLayout(face_grid)
         self.face_person_count_combo = self._bool_combo()
         self.face_color_detection_combo = self._bool_combo()
-        self.face_min_size_spin = QSpinBox()
-        self.face_min_size_spin.setMaximum(10000)
-        self.face_min_size_spin.setValue(5)
-        self.face_max_size_spin = QSpinBox()
-        self.face_max_size_spin.setMaximum(10000)
-        self.face_max_size_spin.setValue(40)
+        self.face_min_size_spin = PrimeInput(
+            type="number",
+            minimum=0,
+            maximum=10000,
+            decimals=0,
+            value=5,
+            placeholder_text="Min face size",
+        )
+        self.face_max_size_spin = PrimeInput(
+            type="number",
+            minimum=0,
+            maximum=10000,
+            decimals=0,
+            value=40,
+            placeholder_text="Max face size",
+        )
         self.face_show_rect_combo = self._bool_combo()
-        face_form.addRow("Person Counting", self.face_person_count_combo)
-        face_form.addRow("Color Detection", self.face_color_detection_combo)
-        face_form.addRow("Min Face Size", self.face_min_size_spin)
-        face_form.addRow("Max Face Size", self.face_max_size_spin)
-        face_form.addRow("Show Total Faces", self.face_show_rect_combo)
+        face_grid.addWidget(self._field_block("Person Counting", self.face_person_count_combo), 0, 0)
+        face_grid.addWidget(self._field_block("Color Detection", self.face_color_detection_combo), 0, 1)
+        face_grid.addWidget(self._field_block("Min Face Size", self.face_min_size_spin), 1, 0)
+        face_grid.addWidget(self._field_block("Max Face Size", self.face_max_size_spin), 1, 1)
+        face_grid.addWidget(self._field_block("Show Total Faces", self.face_show_rect_combo), 2, 0)
         root.addWidget(self.face_box)
 
         action_bar = QHBoxLayout()
         root.addLayout(action_bar)
         action_bar.addStretch(1)
 
-        self.scan_btn = QPushButton("Scan Network")
-        self.scan_btn.clicked.connect(self._scan_network)
-        self.roi_btn = QPushButton("ROI")
-        self.countline_btn = QPushButton("Count Line")
+        self.roi_btn = PrimeButton("ROI", variant="secondary", mode="filled", size="sm")
+        self.countline_btn = PrimeButton("Count Line", variant="secondary", mode="filled", size="sm")
         self.roi_btn.clicked.connect(self._emit_roi)
         self.countline_btn.clicked.connect(self._emit_count_line)
-        cancel_btn = QPushButton("Cancel")
-        save_btn = QPushButton("Update Camera" if self.is_edit_mode else "Add Camera")
-        cancel_btn.clicked.connect(self.reject)
-        save_btn.clicked.connect(self._submit)
 
         if not self.is_edit_mode:
             self.roi_btn.hide()
             self.countline_btn.hide()
-        action_bar.addWidget(self.scan_btn)
         action_bar.addWidget(self.countline_btn)
         action_bar.addWidget(self.roi_btn)
-        action_bar.addWidget(cancel_btn)
-        action_bar.addWidget(save_btn)
 
         if self.camera:
             self._load_camera(self.camera)
-        else:
-            self._write_map_pos(json.dumps({"lat": 36.1901, "lng": 44.0091}))
+
         self._toggle_type_fields()
         self._refresh_doors()
 
-    def _bool_combo(self, default: bool = False) -> QComboBox:
-        combo = QComboBox()
-        combo.addItem("Yes", True)
-        combo.addItem("No", False)
-        combo.setCurrentIndex(0 if default else 1)
+    def _create_section_box(self, title: str) -> tuple[QGroupBox, QVBoxLayout]:
+        box = QGroupBox()
+        box.setObjectName("cameraSectionBox")
+        box.setFlat(True)
+
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(12)
+
+        label = QLabel(title)
+        label.setObjectName("cameraSectionLabel")
+        layout.addWidget(label)
+        return box, layout
+
+    def _field_block(self, label_text: str, field: QWidget) -> QWidget:
+        wrapper = QWidget()
+        layout = QVBoxLayout(wrapper)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        label = QLabel(label_text)
+        label.setObjectName("cameraFieldLabel")
+        layout.addWidget(label)
+        layout.addWidget(field)
+        return wrapper
+
+    def _bool_combo(self, default: bool = False) -> PrimeSelect:
+        combo = PrimeSelect(
+            options=[
+                {"label": "Yes", "value": True},
+                {"label": "No", "value": False},
+            ],
+            placeholder="Select status",
+        )
+        combo.set_value(default)
         return combo
 
-    def _fill_client_combo(self, combo: QComboBox, client_type: str) -> None:
-        combo.addItem("", None)
+    def _fill_client_combo(self, combo: PrimeSelect, client_type: str) -> None:
+        options: List[Dict[str, Any]] = []
         for item in self.client_store.clients:
             item_type = (item.type or "").strip().lower()
             if item_type == client_type or item_type not in {"process", "record"}:
-                combo.addItem(f"{item.name} ({item.ip})", item.id)
+                options.append({"label": f"{item.name} ({item.ip})", "value": item.id})
+        combo.set_options(options)
 
-    def _set_combo_value(self, combo: QComboBox, value: Any) -> None:
-        for i in range(combo.count()):
-            if combo.itemData(i) == value:
-                combo.setCurrentIndex(i)
-                return
+    def _set_combo_value(self, combo: PrimeSelect, value: Any) -> None:
+        combo.set_value(value)
 
     def _toggle_type_fields(self) -> None:
-        self.face_box.setVisible(self.process_type_combo.currentData() == "face")
-        self.countline_btn.setVisible(self.is_edit_mode and self.process_type_combo.currentData() == "face")
+        process_type = self.process_type_combo.value()
+        self.face_box.setVisible(process_type == "face")
+        self.countline_btn.setVisible(self.is_edit_mode and process_type == "face")
 
     def _refresh_doors(self) -> None:
-        self.door_combo.clear()
-        self.door_combo.addItem("", None)
-        selected_id = self.access_control_combo.currentData()
+        selected_id = self.access_control_combo.value()
+        current_door = self.door_combo.value()
+        options: List[Dict[str, Any]] = []
         for ac in self.access_control_store.access_controls:
             if ac.id == selected_id:
                 for idx in range(ac.ac_type.num_of_relay):
-                    self.door_combo.addItem(f"Door {idx + 1}", idx + 1)
+                    options.append({"label": f"Door {idx + 1}", "value": idx + 1})
                 break
-
-    def _select_location(self) -> None:
-        lat = 36.1901
-        lng = 44.0091
-        if self.map_pos_edit.text().strip():
-            try:
-                pos = json.loads(self.map_pos_edit.text().strip())
-                lat = float(pos.get("lat", lat))
-                lng = float(pos.get("lng", lng))
-            except Exception:
-                pass
-        dialog = MapDialog(lat, lng, self)
-        if dialog.exec():
-            self._write_map_pos(json.dumps(dialog.selected))
-
-    def _write_map_pos(self, text: str) -> None:
-        self.map_pos_edit.setText(text)
-        try:
-            pos = json.loads(text)
-            self.latitude_edit.setText(str(pos.get("lat", "")))
-            self.longitude_edit.setText(str(pos.get("lng", "")))
-        except Exception:
-            self.latitude_edit.clear()
-            self.longitude_edit.clear()
+        self.door_combo.set_options(options)
+        self.door_combo.set_value(current_door)
 
     def _normalize_scanned_camera(self, item: Dict[str, Any]) -> Dict[str, Any]:
         ip_address = str(
@@ -1622,39 +1686,14 @@ class CameraFormDialog(QDialog):
         if not normalized_manufacturer:
             return
 
-        for index in range(self.camera_type_combo.count()):
-            label = self.camera_type_combo.itemText(index).strip().lower()
+        for option in self.camera_type_combo.options:
+            label, value = PrimeSelect.normalize_option(option)
+            label = label.strip().lower()
             if not label:
                 continue
             if normalized_manufacturer in label or label in normalized_manufacturer:
-                self.camera_type_combo.setCurrentIndex(index)
+                self.camera_type_combo.set_value(value)
                 return
-
-    def _scan_network(self) -> None:
-        try:
-            payload = ApiService(os.getenv("Base_URL"))._api_request_json(
-                "/api/v1/cameras/scan_cameras",
-                params={"timeout": 10},
-                auth=True,
-            )
-        except Exception as exc:
-            QMessageBox.warning(self, "Scan Network", str(exc))
-            return
-
-        results = extract_dict_list(payload, keys=("items", "data", "results", "cameras"))
-        scanned_cameras: List[Dict[str, Any]] = []
-        for item in results:
-            normalized = self._normalize_scanned_camera(item)
-            if normalized.get("ip_address"):
-                scanned_cameras.append(normalized)
-
-        if not scanned_cameras:
-            QMessageBox.information(self, "Scan Network", "No cameras were found on the network.")
-            return
-
-        dialog = ScanCameraResultsDialog(scanned_cameras, self)
-        if dialog.exec() and dialog.selected_camera:
-            self._apply_scanned_camera(dialog.selected_camera)
 
     def _emit_roi(self) -> None:
         if self.camera:
@@ -1676,7 +1715,6 @@ class CameraFormDialog(QDialog):
         self._set_combo_value(self.access_control_combo, cam.access_control_id)
         self._refresh_doors()
         self._set_combo_value(self.door_combo, cam.door_number)
-        self._write_map_pos(cam.map_pos or json.dumps({"lat": 36.1901, "lng": 44.0091}))
         self._set_combo_value(self.client_1_combo, cam.client_id_1)
         self._set_combo_value(self.client_2_combo, cam.client_id_2)
         self._set_combo_value(self.client_3_combo, cam.client_id_3)
@@ -1694,36 +1732,35 @@ class CameraFormDialog(QDialog):
 
     def _submit(self) -> None:
         if not self.name_edit.text().strip() or not self.camera_ip_edit.text().strip():
-            QMessageBox.warning(self, "Validation", "Camera name and camera IP are required.")
+            show_toast_message(self, "warn", "Validation", "Camera name and camera IP are required.")
             return
 
         payload = {
             "name": self.name_edit.text().strip(),
-            "client_id_1": self.client_1_combo.currentData(),
-            "client_id_2": self.client_2_combo.currentData(),
-            "client_id_3": self.client_3_combo.currentData(),
-            "access_control_id": self.access_control_combo.currentData(),
-            "door_number": self.door_combo.currentData(),
+            "client_id_1": self.client_1_combo.value(),
+            "client_id_2": self.client_2_combo.value(),
+            "client_id_3": self.client_3_combo.value(),
+            "access_control_id": self.access_control_combo.value(),
+            "door_number": self.door_combo.value(),
             "roi": self.camera.roi if self.camera else "",
-            "map_pos": self.map_pos_edit.text().strip(),
-            "is_record": self.is_record_combo.currentData(),
-            "is_process": self.is_process_combo.currentData(),
-            "is_live": self.is_live_combo.currentData(),
-            "is_ptz": self.is_ptz_combo.currentData(),
-            "forward_stream": self.forward_stream_combo.currentData(),
-            "is_ai_cam": self.ai_combo.currentData(),
-            "fps_delay": self.fps_delay_spin.value(),
-            "process_type": self.process_type_combo.currentData(),
-            "camera_type_id": self.camera_type_combo.currentData(),
+            "is_record": self.is_record_combo.value(),
+            "is_process": self.is_process_combo.value(),
+            "is_live": self.is_live_combo.value(),
+            "is_ptz": self.is_ptz_combo.value(),
+            "forward_stream": self.forward_stream_combo.value(),
+            "is_ai_cam": self.ai_combo.value(),
+            "fps_delay": int(self.fps_delay_spin.value()),
+            "process_type": self.process_type_combo.value(),
+            "camera_type_id": self.camera_type_combo.value(),
             "camera_ip": self.camera_ip_edit.text().strip(),
             "camera_username": self.camera_username_edit.text().strip(),
             "camera_password": self.camera_password_edit.text(),
-            "camera_port": self.camera_port_spin.value(),
-            "face_person_count": self.face_person_count_combo.currentData(),
-            "face_color_detection": self.face_color_detection_combo.currentData(),
-            "face_min_size": self.face_min_size_spin.value(),
-            "face_max_size": self.face_max_size_spin.value(),
-            "face_show_rect": self.face_show_rect_combo.currentData(),
+            "camera_port": int(self.camera_port_spin.value()),
+            "face_person_count": self.face_person_count_combo.value(),
+            "face_color_detection": self.face_color_detection_combo.value(),
+            "face_min_size": int(self.face_min_size_spin.value()),
+            "face_max_size": int(self.face_max_size_spin.value()),
+            "face_show_rect": self.face_show_rect_combo.value(),
             "face_count_line": self.camera.face_count_line if self.camera else "",
             "online": self.camera.online if self.camera else False,
         }
@@ -1755,6 +1792,10 @@ class CameraPage(QWidget):
         self.camera_store = camera_store
         self.search_text = ""
         self._visible_password_camera_ids: set[int] = set()
+        self._ws_connected = False
+        self._ws_camera_online_by_id: Dict[int, bool] = {}
+        self._scan_thread: Optional[_ScanThread] = None
+        self._status_ws = CameraStatusWsClient(self)
 
         self.camera_store.success.connect(self._show_info)
         self.camera_store.error.connect(self._show_error)
@@ -1763,6 +1804,8 @@ class CameraPage(QWidget):
         self.department_store.error.connect(self._show_error)
         self.department_store.changed.connect(self.refresh)
         self.auth_store.changed.connect(self.refresh)
+        self._status_ws.connectionChanged.connect(self._on_ws_connection)
+        self._status_ws.statusUpdate.connect(self._on_ws_status_update)
 
         root = QHBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8)
@@ -1781,7 +1824,7 @@ class CameraPage(QWidget):
             ("Cameras", "devices.svg", "/device/cameras"),
             # ("GPS", "gps.svg", "/device/gps"),
             # ("Bodycam", "bodycam.svg", "/device/body-cam"),
-            ("Access", "activation.svg", "/device/access-control"),
+            # ("Access", "activation.svg", "/device/access-control"),
         ]
         current_path = "/device/cameras"
         for label, icon_name, path in nav_items:
@@ -1823,6 +1866,10 @@ class CameraPage(QWidget):
         toolbar.addWidget(self.camera_types_btn)
 
         toolbar.addStretch(1)
+
+        self.scan_btn = PrimeButton("Scan Network", variant="contrast", mode="filled", size="sm",width=100)
+        self.scan_btn.clicked.connect(self._start_scan)
+        toolbar.addWidget(self.scan_btn)
 
         self.search_edit = QLineEdit()
         self.search_edit.setPlaceholderText("Search...")
@@ -1873,6 +1920,7 @@ class CameraPage(QWidget):
         self.status_timer = QTimer(self)
         self.status_timer.timeout.connect(self._poll_updates)
         self.status_timer.start(10000)
+        self._status_ws.connect_socket()
 
         self.setStyleSheet(
             """
@@ -1988,9 +2036,54 @@ class CameraPage(QWidget):
         self.client_store.load()
         super().showEvent(event)
 
+    def closeEvent(self, event) -> None:  # type: ignore[override]
+        self.status_timer.stop()
+        self._status_ws.close()
+        return super().closeEvent(event)
+
     def _on_search_changed(self, text: str) -> None:
         self.search_text = text
         self.refresh()
+
+    def _camera_status_value(self, cam: Camera) -> bool:
+        if not self._ws_connected:
+            return False
+        return bool(self._ws_camera_online_by_id.get(cam.id, False))
+
+    def _on_ws_connection(self, connected: bool) -> None:
+        was_connected = self._ws_connected
+        self._ws_connected = connected
+        if connected:
+            return
+        if was_connected or self._ws_camera_online_by_id:
+            self._ws_camera_online_by_id.clear()
+            self._populate_table()
+
+    def _on_ws_status_update(self, payload: Dict[str, Any]) -> None:
+        camera_list = payload.get("cameras")
+        if not isinstance(camera_list, list):
+            return
+
+        changed = False
+        camera_by_id = {cam.id: cam for cam in self.department_store.cameras}
+        for updated in camera_list:
+            if not isinstance(updated, dict):
+                continue
+            camera_id = _as_int(updated.get("id") or updated.get("camera_id") or updated.get("cam_id"), 0)
+            if camera_id <= 0:
+                continue
+            online = _extract_camera_online(updated)
+            if online is None:
+                continue
+            if self._ws_camera_online_by_id.get(camera_id) != online:
+                self._ws_camera_online_by_id[camera_id] = online
+                changed = True
+            cam = camera_by_id.get(camera_id)
+            if cam is not None:
+                cam.online = online
+
+        if changed:
+            self._populate_table()
 
     def _populate_table(self) -> None:
         items = self.filtered_cameras()
@@ -2016,7 +2109,7 @@ class CameraPage(QWidget):
                     "record": cam.is_record,
                     "process": cam.is_process,
                     "live": cam.is_live,
-                    "status": cam.online,
+                    "status": self._camera_status_value(cam),
                     "fps_delay": cam.fps_delay,
                     "actions": "",
                     "_camera": cam,
@@ -2125,7 +2218,7 @@ class CameraPage(QWidget):
         layout.addLayout(text_wrap, 1)
         return box
 
-    def _status_chip(self, text: str, bg: str, fg: str = "#0b0f17") -> QWidget:
+    def _status_chip(self, text: str, bg: str, fg: str = "#ffffff") -> QWidget:
         box = QWidget()
         layout = QHBoxLayout(box)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -2141,9 +2234,47 @@ class CameraPage(QWidget):
         layout.addWidget(chip)
         return box
 
-    def _state_icon_cell(self, active: bool, icon: str, active_bg: str, inactive_bg: str) -> QWidget:
-        fg = "#0f172a" if active else "#3f3f46"
-        return self._status_chip(icon, active_bg if active else inactive_bg, fg)
+    def _state_icon_cell(self, active: bool, icon_name: str, fallback_text: str) -> QWidget:
+        box = QWidget()
+        box.setStyleSheet("background: transparent;")
+        layout = QHBoxLayout(box)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.setAlignment(Qt.AlignCenter)
+
+        chip = QFrame()
+        chip.setFixedSize(35,35)
+        chip.setStyleSheet(
+            f"""
+            QFrame {{
+                background: { Constants.SUCCESS if active else Constants.ERROR};
+                border: none;
+                border-radius: 14px;
+            }}
+            """
+        )
+        chip_layout = QHBoxLayout(chip)
+        chip_layout.setContentsMargins(0, 0, 0, 0)
+        chip_layout.setSpacing(0)
+        chip_layout.setAlignment(Qt.AlignCenter)
+
+        icon_label = QLabel()
+        icon_label.setFixedSize(20, 20)
+        icon_label.setStyleSheet("background: transparent; border: none;")
+        icon_file = _icon_path(icon_name)
+        if os.path.isfile(icon_file):
+            icon_label.setPixmap(QIcon(icon_file).pixmap(QSize(20, 20)))
+        else:
+            icon_label.setText(fallback_text)
+            icon_label.setAlignment(Qt.AlignCenter)
+            icon_label.setStyleSheet(
+                "background: transparent; color:#ffffff; font-size:10px; font-weight:800;"
+            )
+        chip_layout.addWidget(icon_label)
+
+        chip.setToolTip("Enabled" if active else "Disabled")
+        layout.addWidget(chip)
+        return box
 
     def _client_cell_widget(self, row: Dict[str, Any]) -> QWidget:
         client = row.get("client") or {}
@@ -2166,8 +2297,8 @@ class CameraPage(QWidget):
     def _type_cell_widget(self, row: Dict[str, Any]) -> QWidget:
         process_type = str(row.get("type") or "lpr").lower()
         if process_type == "face":
-            return self._status_chip("Face", "#9ec5ff", "#0b1f47")
-        return self._status_chip("LPR", "#9af0b6", "#0b3b1f")
+            return self._status_chip("Face", Constants.PRIMARY)
+        return self._status_chip("LPR", Constants.SUCCESS)
 
     def _password_cell_widget(self, row: Dict[str, Any]) -> QWidget:
         cam = row["_camera"]
@@ -2198,16 +2329,16 @@ class CameraPage(QWidget):
         return box
 
     def _record_cell_widget(self, row: Dict[str, Any]) -> QWidget:
-        return self._state_icon_cell(bool(row.get("record")), "R", "#bdf3d1", "#d2d6de")
+        return self._state_icon_cell(bool(row.get("record")), "record.svg", "R")
 
     def _process_cell_widget(self, row: Dict[str, Any]) -> QWidget:
-        return self._state_icon_cell(bool(row.get("process")), "P", "#ffe0c7", "#d2d6de")
+        return self._state_icon_cell(bool(row.get("process")), "process.svg", "P")
 
     def _live_cell_widget(self, row: Dict[str, Any]) -> QWidget:
-        return self._state_icon_cell(bool(row.get("live")), "L", "#bbf7d0", "#d2d6de")
+        return self._state_icon_cell(bool(row.get("live")), "live.svg", "L")
 
     def _status_cell_widget(self, row: Dict[str, Any]) -> QWidget:
-        return self._state_icon_cell(bool(row.get("status")), "S", "#b7f7cf", "#f1c6c6")
+        return self._state_icon_cell(bool(row.get("status")), "status.svg", "S")
 
     def _action_widget(self, cam: Camera) -> QWidget:
         box = QWidget()
@@ -2216,19 +2347,7 @@ class CameraPage(QWidget):
         layout.setSpacing(8)
         layout.setAlignment(Qt.AlignCenter)
 
-        open_btn = self._text_action_button(
-            "◌", "#24282f", "#f8fafc", "#616777", svg_icon="browser.svg"
-        )
-        open_btn.setToolTip("Open Camera Browser")
-        open_btn.clicked.connect(lambda: self._show_info(f"Open http://{cam.camera_ip} in browser."))
-        layout.addWidget(open_btn)
 
-        settings_btn = self._text_action_button(
-            "⚙", "#374151", "#ffffff", "#4b5563", svg_icon="settings.svg"
-        )
-        settings_btn.setToolTip("Camera Settings")
-        settings_btn.clicked.connect(lambda: self.show_camera_settings(cam))
-        layout.addWidget(settings_btn)
 
         edit_btn = self._text_action_button(
             "✎", "#3578f6", "#ffffff", "#4e8cff", svg_icon="edit.svg"
@@ -2290,8 +2409,14 @@ class CameraPage(QWidget):
             self._show_error(str(exc))
 
     def handle_delete_camera(self, cam: Camera) -> None:
-        result = QMessageBox.question(self, "Delete Record", f"Are you sure to delete '{cam.name}'?")
-        if result == QMessageBox.Yes:
+        confirmed = PrimeConfirmDialog.ask(
+            parent=self,
+            title="Delete Record",
+            message=f"Are you sure you want to delete '{cam.name}'?",
+            ok_text="Delete",
+            cancel_text="Cancel",
+        )
+        if confirmed:
             try:
                 self.camera_store.delete_camera(cam.id)
             except Exception as exc:
@@ -2355,6 +2480,41 @@ class CameraPage(QWidget):
     def show_camera_types(self) -> None:
         CameraTypeManagerDialog(self.camera_type_store, self).exec()
 
+    def _start_scan(self) -> None:
+        self.scan_btn.set_loading(True)
+        self._scan_thread = _ScanThread(self.camera_store.service)
+        self._scan_thread.scan_done.connect(self._on_scan_done)
+        self._scan_thread.scan_error.connect(self._on_scan_error)
+        self._scan_thread.finished.connect(self._scan_thread.deleteLater)
+        self._scan_thread.start()
+
+    def _on_scan_done(self, cameras: List[Dict[str, Any]]) -> None:
+        self.scan_btn.set_loading(False)
+        if not cameras:
+            show_toast_message(self, "warn", "Scan", "No cameras found on the network.")
+            return
+        result_dialog = ScanCameraResultsDialog(cameras, self)
+        if result_dialog.exec() and result_dialog.selected_camera:
+            self._open_add_with_scan(result_dialog.selected_camera)
+
+    def _on_scan_error(self, message: str) -> None:
+        self.scan_btn.set_loading(False)
+        show_toast_message(self, "error", "Scan Error", message)
+
+    def _open_add_with_scan(self, scanned_camera: Dict[str, Any]) -> None:
+        self._reload_dialog_dependencies()
+        dialog = CameraFormDialog(
+            self.auth_store,
+            self.client_store,
+            self.camera_type_store,
+            self.access_control_store,
+            camera=None,
+            parent=self,
+        )
+        dialog.submitted.connect(self.handle_submit_form)
+        dialog._apply_scanned_camera(scanned_camera)
+        dialog.exec()
+
     def toggle_password(self, cam: Camera) -> None:
         if cam.id in self._visible_password_camera_ids:
             self._visible_password_camera_ids.discard(cam.id)
@@ -2363,10 +2523,10 @@ class CameraPage(QWidget):
         self.refresh()
 
     def _show_info(self, text: str) -> None:
-        QMessageBox.information(self, "Info", text)
+        show_toast_message(self, "info", "Info", text)
 
     def _show_error(self, text: str) -> None:
-        QMessageBox.critical(self, "Error", text)
+        show_toast_message(self, "error", "Error", text)
 
     def _poll_updates(self) -> None:
         if not self.auth_store.current_user:

@@ -16,6 +16,7 @@ from PySide6.QtGui import (
     QColor, QPainter, QPainterPath, QCursor, QFont, QPen,
 )
 from app.constants._init_ import Constants
+from app.ui.menu import PrimeMenu
 from app.widgets.svg_widget import SvgWidget
 
 BASE_DIR  = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -823,11 +824,11 @@ class AppHeader(QWidget):
 
         self._search_btn = IconBtn(svg_icon="search.svg")
         self._search_btn.setToolTip("Search")
-        self._search_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self._search_btn.clicked.connect(self._open_search_menu)
 
         self._profile_btn = IconBtn(svg_icon="profile.svg")
         self._profile_btn.setToolTip("Profile")
-        self._profile_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self._profile_btn.clicked.connect(self._open_profile_menu)
 
         for btn in [
             self._live_btn,
@@ -893,26 +894,44 @@ class AppHeader(QWidget):
 
 
         # ── Search menu ───────────────────────────────────────────────────────
-        sm = QMenu(self)
-        sm.setStyleSheet(_MENU_QSS)
-        sm.addSection("LPR")
-        sm.addAction("🔍  LPR Search",        nav("/search/lpr"))
-        sm.addAction("🗺️   LPR Map Search",    nav("/search/lprmap"))
-        sm.addSection("Face")
-        sm.addAction("🔍  Face Search",        nav("/search/face"))
-        sm.addAction("🗺️   Face Map Search",   nav("/search/facemap"))
-        sm.addSection("Playback")
-        sm.addAction("⏮️   Camera Playback",    nav("/camera/playback"))
-        sm.addAction("🔄  Repeated Search",    nav("/search/lpr/repeated"))
-        self._search_btn.setMenu(sm)
+        self._search_menu = PrimeMenu(
+            items=[
+                {
+                    "label": "LPR",
+                    "items": [
+                        {"label": "LPR Search", "command": nav("/search/lpr")},
+                        {"label": "LPR Map Search", "command": nav("/search/lprmap")},
+                    ],
+                },
+                {
+                    "label": "Face",
+                    "items": [
+                        {"label": "Face Search", "command": nav("/search/face")},
+                        {"label": "Face Map Search", "command": nav("/search/facemap")},
+                    ],
+                },
+                {
+                    "label": "Playback",
+                    "items": [
+                        {"label": "Camera Playback", "command": nav("/camera/playback")},
+                        {"label": "Repeated Search", "command": nav("/search/lpr/repeated")},
+                    ],
+                },
+            ],
+            parent=self,
+            minimum_width=240,
+        )
 
         # ── Profile menu ──────────────────────────────────────────────────────
-        pm = QMenu(self)
-        pm.setStyleSheet(_MENU_QSS)
-        pm.addAction("👤  Profile",            nav("/user/profile"))
-        pm.addSeparator()
-        pm.addAction("🚪  Logout",             self.logout_requested.emit)
-        self._profile_btn.setMenu(pm)
+        self._profile_menu = PrimeMenu(
+            items=[
+                {"label": "Profile", "command": nav("/user/profile")},
+                {"separator": True},
+                {"label": "Logout", "command": self.logout_requested.emit},
+            ],
+            parent=self,
+            minimum_width=200,
+        )
 
     # ── Navigation ────────────────────────────────────────────────────────────
     def _on_navigate(self, path: str):
@@ -921,6 +940,12 @@ class AppHeader(QWidget):
 
     def _on_quick_action(self, path: str):
         self._on_navigate(path)
+
+    def _open_search_menu(self):
+        self._search_menu.popup_below(self._search_btn, align=Qt.AlignmentFlag.AlignRight)
+
+    def _open_profile_menu(self):
+        self._profile_menu.popup_below(self._profile_btn, align=Qt.AlignmentFlag.AlignRight)
 
     # ── Notifications ─────────────────────────────────────────────────────────
     def add_lpr_notification(self, data: dict):

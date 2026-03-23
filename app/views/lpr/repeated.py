@@ -6,7 +6,18 @@ import urllib.parse
 from datetime import datetime
 from typing import Dict, List, Optional
 
-from PySide6.QtCore import QDate, QDateTime, QSize, Qt, QTime, QUrl, Signal,QRectF
+from PySide6.QtCore import (
+    QDate,
+    QDateTime,
+    QEasingCurve,
+    QPropertyAnimation,
+    QSize,
+    Qt,
+    QTime,
+    QUrl,
+    Signal,
+    QRectF,
+)
 from PySide6.QtGui import QIcon, QPixmap,QColor,QPainter,QPainterPath
 from app.constants._init_ import Constants
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
@@ -471,7 +482,8 @@ class LprRepeatedPage(QWidget):
         self.search_store = LprSearchStore(LprSearchService())
 
         self._loaded_department_id: Optional[int] = None
-        self.filters_window_visible = True
+        self.filters_window_visible = False
+        self._filters_slide_animation: Optional[QPropertyAnimation] = None
         self.has_searched = False
 
         self.auth_store.changed.connect(self.refresh)
@@ -490,13 +502,27 @@ class LprRepeatedPage(QWidget):
         self.refresh()
 
     def _build_ui(self) -> None:
-        root = QVBoxLayout(self)
+        root = QHBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8)
-        root.setSpacing(8)
+        root.setSpacing(12)
+        self._root_layout = root
+
+        self.filters_panel = QFrame()
+        self.filters_panel.setObjectName("filtersPanel")
+        self.filters_panel.setMinimumWidth(0)
+        self.filters_panel.setMaximumWidth(0 if not self.filters_window_visible else 16777215)
+        self.filters_panel.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        filters_layout = QVBoxLayout(self.filters_panel)
+        filters_layout.setContentsMargins(0, 0, 0, 0)
+        filters_layout.setSpacing(0)
+        self.filters_panel.setVisible(self.filters_window_visible)
+        root.addWidget(self.filters_panel, 0)
 
         self.content_panel = QFrame()
         self.content_panel.setObjectName("repeatedContentPanel")
         root.addWidget(self.content_panel, 1)
+        root.setStretch(0, 1)
+        root.setStretch(1, 4)
 
         content = QVBoxLayout(self.content_panel)
         content.setContentsMargins(18, 18, 18, 18)
@@ -507,31 +533,32 @@ class LprRepeatedPage(QWidget):
         self.hero_scroll.setWidgetResizable(True)
         self.hero_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.hero_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.hero_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.hero_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
-        self.hero_scroll.setMinimumHeight(0)
-        content.addWidget(self.hero_scroll)
+        self.hero_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.hero_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        filters_layout.addWidget(self.hero_scroll, 1)
 
         hero_frame = QFrame()
         hero_frame.setObjectName("repeatedHero")
+        hero_frame.setMinimumWidth(0)
         self.hero_frame = hero_frame
         hero = QVBoxLayout(hero_frame)
         hero.setContentsMargins(18, 18, 18, 18)
         hero.setSpacing(14)
         self.hero_scroll.setWidget(hero_frame)
 
-        hero_head = QHBoxLayout()
+        hero_head = QVBoxLayout()
         hero_head.setContentsMargins(0, 0, 0, 0)
-        hero_head.setSpacing(8)
+        hero_head.setSpacing(6)
         hero.addLayout(hero_head)
 
         hero_text = QVBoxLayout()
         hero_text.setContentsMargins(0, 0, 0, 0)
         hero_text.setSpacing(4)
-        hero_head.addLayout(hero_text, 1)
+        hero_head.addLayout(hero_text)
 
         hero_title = QLabel("LPR Repeated Window")
         hero_title.setObjectName("heroTitle")
+        hero_title.setWordWrap(True)
         hero_text.addWidget(hero_title)
 
         hero_hint = QLabel("Search repeated license plates by time range, threshold, and selected cameras. Use the filter panel only when you need it.")
@@ -539,16 +566,15 @@ class LprRepeatedPage(QWidget):
         hero_hint.setWordWrap(True)
         hero_text.addWidget(hero_hint)
 
-        self.filter_state_chip = QLabel("Filters visible")
+        self.filter_state_chip = QLabel("Quick search")
         self.filter_state_chip.setObjectName("heroChip")
-        hero_head.addWidget(self.filter_state_chip, 0, Qt.AlignmentFlag.AlignTop)
+        hero_head.addWidget(self.filter_state_chip, 0, Qt.AlignmentFlag.AlignLeft)
 
         fields_grid = QGridLayout()
         fields_grid.setContentsMargins(0, 0, 0, 0)
         fields_grid.setHorizontalSpacing(12)
         fields_grid.setVerticalSpacing(12)
         fields_grid.setColumnStretch(0, 1)
-        fields_grid.setColumnStretch(1, 1)
         hero.addLayout(fields_grid)
 
         self.date_from_field = FilterDateTimeField("Start Time")
@@ -569,8 +595,8 @@ class LprRepeatedPage(QWidget):
                 self.date_to_field,
                 "Search until this timestamp.",
             ),
-            0,
             1,
+            0,
         )
 
         self.repeated_spin = QSpinBox()
@@ -582,7 +608,7 @@ class LprRepeatedPage(QWidget):
                 self.repeated_spin,
                 "Minimum repeated hits required for a plate.",
             ),
-            1,
+            2,
             0,
         )
 
@@ -596,19 +622,14 @@ class LprRepeatedPage(QWidget):
                 self.camera_select,
                 "Limit repeated search to selected cameras.",
             ),
-            1,
-            1,
+            3,
+            0,
         )
 
-        hero_actions = QHBoxLayout()
+        hero_actions = QVBoxLayout()
         hero_actions.setContentsMargins(0, 0, 0, 0)
-        hero_actions.setSpacing(10)
+        hero_actions.setSpacing(8)
         hero.addLayout(hero_actions)
-
-        self.filter_toggle_btn = QPushButton("Hide Filters")
-        self.filter_toggle_btn.setObjectName("filterToggleButton")
-        self.filter_toggle_btn.clicked.connect(self.toggle_filters_window)
-        hero_actions.addWidget(self.filter_toggle_btn)
 
         self.reset_btn = QPushButton("Reset Filters")
         self.reset_btn.setObjectName("secondarySidebarButton")
@@ -619,8 +640,6 @@ class LprRepeatedPage(QWidget):
         self.search_btn.setObjectName("primarySidebarButton")
         self.search_btn.clicked.connect(self.perform_search)
         hero_actions.addWidget(self.search_btn)
-
-        hero_actions.addStretch(1)
 
         toolbar_frame = QFrame()
         toolbar_frame.setObjectName("repeatedToolbar")
@@ -640,7 +659,9 @@ class LprRepeatedPage(QWidget):
         left_cluster.addWidget(self.status_label)
         toolbar.addLayout(left_cluster, 1)
 
-        self.results_filter_btn = QPushButton("Hide Filters")
+        self.results_filter_btn = QPushButton(
+            "Hide Sidebar" if self.filters_window_visible else "Show Sidebar"
+        )
         self.results_filter_btn.setObjectName("filterToggleButton")
         self.results_filter_btn.clicked.connect(self.toggle_filters_window)
         toolbar.addWidget(self.results_filter_btn)
@@ -742,19 +763,23 @@ class LprRepeatedPage(QWidget):
             QWidget {
                 color: #eef2f8;
             }
+            QFrame#filtersPanel {
+                background: transparent;
+                border: none;
+            }
             QFrame#repeatedContentPanel {
                 background: #171b21;
                 border: 1px solid #2b3340;
                 border-radius: 16px;
             }
             QFrame#repeatedHero {
-                background: #151920;
-                border: 1px solid #2a3140;
+                background: #171b22;
+                border: 1px solid #2b3240;
                 border-radius: 16px;
             }
             QFrame#repeatedToolbar {
-                background: #151920;
-                border: 1px solid #2a3140;
+                background: #1f2630;
+                border: 1px solid #2e3746;
                 border-radius: 14px;
             }
             QLabel#heroTitle {
@@ -769,9 +794,9 @@ class LprRepeatedPage(QWidget):
             QLabel#heroChip {
                 padding: 6px 12px;
                 border-radius: 999px;
-                background: rgba(59, 130, 246, 0.18);
-                border: 1px solid rgba(96, 165, 250, 0.35);
-                color: #dbeafe;
+                background: rgba(148, 163, 184, 0.14);
+                border: 1px solid rgba(148, 163, 184, 0.32);
+                color: #e2e8f0;
                 font-size: 11px;
                 font-weight: 700;
             }
@@ -786,7 +811,7 @@ class LprRepeatedPage(QWidget):
                 font-size: 13px;
             }
             QLabel#heroFieldLabel {
-                color: #dbe3ef;
+                color: #cbd5e1;
                 font-size: 12px;
                 font-weight: 700;
             }
@@ -799,16 +824,16 @@ class LprRepeatedPage(QWidget):
                 font-size: 12px;
             }
             QFrame#repeatedDateField {
-                background: #242a33;
-                border: 1px solid #364150;
+                background: #232a34;
+                border: 1px solid #364152;
                 border-radius: 10px;
             }
             QDateTimeEdit#repeatedDateEdit,
             QSpinBox,
             QLineEdit,
             QComboBox {
-                background: #242a33;
-                border: 1px solid #364150;
+                background: #232a34;
+                border: 1px solid #364152;
                 border-radius: 10px;
                 color: #eef2f8;
                 padding: 8px 10px;
@@ -820,8 +845,8 @@ class LprRepeatedPage(QWidget):
                 padding: 0 8px;
             }
             QWidget#heroFieldBlock {
-                background: #11161d;
-                border: 1px solid #293241;
+                background: #1f2630;
+                border: 1px solid #2e3746;
                 border-radius: 14px;
                 padding: 2px;
             }
@@ -889,7 +914,6 @@ class LprRepeatedPage(QWidget):
         self.table.set_rows(self._rows())
         self.search_btn.setEnabled(not self.repeated_store.loading)
         self.reset_btn.setEnabled(not self.repeated_store.loading)
-        self.filter_toggle_btn.setEnabled(not self.repeated_store.loading)
         self.results_filter_btn.setEnabled(not self.repeated_store.loading)
         if self.repeated_store.loading:
             self.status_label.setText("Loading repeated results...")
@@ -929,20 +953,79 @@ class LprRepeatedPage(QWidget):
         self.next_btn.setEnabled(total_pages > 0 and current_page < total_pages)
 
     def _sync_filters_window_ui(self) -> None:
-        self.hero_scroll.setVisible(self.filters_window_visible)
+        if hasattr(self, "filters_panel"):
+            self._sync_filters_panel_width(animate=False)
+        else:
+            self.hero_scroll.setVisible(self.filters_window_visible)
         self._update_filters_scroll_height()
-        button_text = "Hide Filters" if self.filters_window_visible else "Show Filters"
+        button_text = "Hide Sidebar" if self.filters_window_visible else "Show Sidebar"
         self.results_filter_btn.setText(button_text)
-        self.filter_toggle_btn.setText(button_text)
-        self.filter_state_chip.setText("Filters visible" if self.filters_window_visible else "Filters hidden")
+        self.filter_state_chip.setText("All filters visible")
 
     def _update_filters_scroll_height(self) -> None:
-        max_height = max(220, min(430, int(self.height() * 0.42)))
-        self.hero_scroll.setMaximumHeight(max_height)
+        self.hero_scroll.setMaximumHeight(16777215)
+
+    def _target_filters_panel_width(self) -> int:
+        if not hasattr(self, "_root_layout"):
+            return 0
+        layout = self._root_layout
+        margins = layout.contentsMargins()
+        spacing = max(0, layout.spacing())
+        available = self.width() - margins.left() - margins.right() - spacing
+        if available <= 0:
+            return 0
+        return max(0, int(available * 0.2))
+
+    def _set_filters_panel_width(self, width: int) -> None:
+        if not hasattr(self, "filters_panel"):
+            return
+        self.filters_panel.setMaximumWidth(max(0, width))
+
+    def _animate_filters_panel_width(self, target: int) -> None:
+        if not hasattr(self, "filters_panel"):
+            return
+        target = max(0, int(target))
+        if self._filters_slide_animation is not None:
+            try:
+                self._filters_slide_animation.stop()
+            except Exception:
+                pass
+            self._filters_slide_animation.deleteLater()
+            self._filters_slide_animation = None
+
+        current = max(0, int(self.filters_panel.maximumWidth()))
+        if target > 0:
+            self.filters_panel.setVisible(True)
+        if current == target:
+            if target == 0:
+                self.filters_panel.setVisible(False)
+            return
+
+        animation = QPropertyAnimation(self.filters_panel, b"maximumWidth", self)
+        animation.setDuration(220)
+        animation.setStartValue(current)
+        animation.setEndValue(target)
+        animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        if target == 0:
+            animation.finished.connect(lambda: self.filters_panel.setVisible(False))
+        self._filters_slide_animation = animation
+        animation.start()
+
+    def _sync_filters_panel_width(self, animate: bool = False) -> None:
+        if not hasattr(self, "filters_panel") or not hasattr(self, "_root_layout"):
+            return
+        target = self._target_filters_panel_width() if self.filters_window_visible else 0
+        if animate:
+            self._animate_filters_panel_width(target)
+            return
+        self._set_filters_panel_width(target)
+        self.filters_panel.setVisible(target > 0)
 
     def _set_filters_window_visible(self, visible: bool) -> None:
         self.filters_window_visible = visible
-        self._sync_filters_window_ui()
+        self._sync_filters_panel_width(animate=True)
+        self._update_filters_scroll_height()
+        self.results_filter_btn.setText("Hide Sidebar" if self.filters_window_visible else "Show Sidebar")
 
     def toggle_filters_window(self) -> None:
         self._set_filters_window_visible(not self.filters_window_visible)
@@ -966,7 +1049,7 @@ class LprRepeatedPage(QWidget):
         self.camera_select.set_value([])
         self.repeated_spin.setValue(2)
         self.repeated_store.clear()
-        self._set_filters_window_visible(True)
+        self.refresh()
 
     def perform_search(self) -> None:
         date_from = self.date_from_field.value()
@@ -985,7 +1068,6 @@ class LprRepeatedPage(QWidget):
             repeated_number=self.repeated_spin.value(),
         )
         self.has_searched = True
-        self._set_filters_window_visible(False)
         results = self.repeated_store.search(payload)
         if results:
             self.toast.success("Repeated Search", f"Loaded {len(results)} repeated plates.")
@@ -1016,6 +1098,7 @@ class LprRepeatedPage(QWidget):
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
+        self._sync_filters_panel_width(animate=False)
         self._update_filters_scroll_height()
     def paintEvent(self, event):
         p = QPainter(self)

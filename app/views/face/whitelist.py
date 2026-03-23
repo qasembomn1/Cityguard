@@ -21,7 +21,6 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QLineEdit,
-    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -42,7 +41,8 @@ from app.store.home.face.face_whitelist_store import FaceWhitelistStore
 from app.store.home.user.department_store import DepartmentStore as CameraDepartmentStore
 from app.ui.button import PrimeButton
 from app.ui.table import PrimeDataTable, PrimeTableColumn
-from app.ui.toast import PrimeToastHost
+from app.ui.confirm_dialog import PrimeConfirmDialog
+from app.ui.toast import PrimeToastHost, show_toast_message
 from app.views.watchlist_shared import WATCHLIST_SIDEBAR_STYLES, WatchlistSidebar
 
 
@@ -326,7 +326,7 @@ class AddImageDialog(QDialog):
 
     def _submit(self) -> None:
         if not self._image_path:
-            QMessageBox.warning(self, "Add Image", "Choose an image first.")
+            show_toast_message(self, "warn", "Add Image", "Choose an image first.")
             return
         self.accept()
 
@@ -1400,17 +1400,18 @@ class FaceRegistryPage(QWidget):
         text: str = "",
         bg: str,
         border: str,
+        size: int = 34,
     ) -> QToolButton:
         btn = QToolButton()
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setFixedSize(32, 32)
+        btn.setFixedSize(size, size)
         btn.setText(text)
         btn.setStyleSheet(
             f"""
             QToolButton {{
                 background: {bg};
                 border: 1px solid {border};
-                border-radius: 16px;
+                border-radius: {size // 2}px;
                 color: #f8fafc;
                 font-size: 13px;
                 font-weight: 700;
@@ -1418,13 +1419,19 @@ class FaceRegistryPage(QWidget):
             QToolButton:hover {{
                 border-color: #f8fafc;
             }}
+            QToolButton:disabled {{
+                background: #2b2d33;
+                border-color: #3b3f47;
+                color: #7b8090;
+            }}
             """
         )
         if icon_name:
             icon_file = _icon_path(icon_name)
             if os.path.isfile(icon_file):
+                icon_px = max(12, size - 16)
                 btn.setIcon(QIcon(icon_file))
-                btn.setIconSize(QSize(16, 16))
+                btn.setIconSize(QSize(icon_px, icon_px))
         return btn
 
     def _primary_image_cell(self, row: Dict[str, object]) -> QWidget:
@@ -1503,13 +1510,13 @@ class FaceRegistryPage(QWidget):
         add_btn.clicked.connect(lambda: self._open_add_image_dialog(entry))
         layout.addWidget(add_btn)
 
-        edit_btn = self._action_button(icon_name="edit.svg", bg="#35507f", border="#4d76bb")
+        edit_btn = self._action_button(icon_name="edit.svg", bg="#3578f6", border="#4e8cff")
         edit_btn.setToolTip("Edit details")
         edit_btn.setEnabled(can_manage)
         edit_btn.clicked.connect(lambda: self._populate_form(entry))
         layout.addWidget(edit_btn)
 
-        delete_btn = self._action_button(icon_name="trash.svg", bg="#8b2f3f", border="#bb4d62")
+        delete_btn = self._action_button(icon_name="trash.svg", bg="#ef4444", border="#ff6464")
         delete_btn.setToolTip("Delete person")
         delete_btn.setEnabled(can_manage)
         delete_btn.clicked.connect(lambda: self._confirm_delete_person(entry))
@@ -1532,12 +1539,14 @@ class FaceRegistryPage(QWidget):
 
         def handle_delete(template_id: str) -> None:
             current_entry = self.whitelist_store.find_entry(entry.identifier) or entry
-            result = QMessageBox.question(
-                dialog,
-                "Delete Image",
-                "Delete this template image?",
+            confirmed = PrimeConfirmDialog.ask(
+                parent=dialog,
+                title="Delete Image",
+                message="Delete this template image?",
+                ok_text="Delete",
+                cancel_text="Cancel",
             )
-            if result != QMessageBox.StandardButton.Yes:
+            if not confirmed:
                 return
             success = self.whitelist_store.delete_template_image(current_entry.identifier, template_id)
             if success:
@@ -1578,12 +1587,14 @@ class FaceRegistryPage(QWidget):
             self._show_error(str(exc))
 
     def _confirm_delete_person(self, entry: FaceWhitelistEntry) -> None:
-        result = QMessageBox.question(
-            self,
-            "Delete Person",
-            f"Delete '{entry.name or entry.identifier}' and all template images?",
+        confirmed = PrimeConfirmDialog.ask(
+            parent=self,
+            title="Delete Person",
+            message=f"Delete '{entry.name or entry.identifier}' and all template images?",
+            ok_text="Delete",
+            cancel_text="Cancel",
         )
-        if result == QMessageBox.StandardButton.Yes:
+        if confirmed:
             self.whitelist_store.delete_entry(entry.identifier)
 
     def _show_success(self, text: str) -> None:

@@ -5,8 +5,8 @@ import re
 from math import isqrt
 from typing import Dict, List, Optional
 
-from PySide6.QtCore import QMimeData, QPoint, Qt, Signal
-from PySide6.QtGui import QColor, QDrag, QPainter, QPixmap
+from PySide6.QtCore import QMimeData, QPoint, QSize, Qt, Signal
+from PySide6.QtGui import QIcon, QColor, QDrag, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -18,7 +18,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
-    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -30,6 +29,8 @@ from PySide6.QtWidgets import (
 from app.models.camera import Camera
 from app.models.screen import ScreenResponse
 from app.store.home.stream.screen_store import ScreenStore
+from app.ui.confirm_dialog import PrimeConfirmDialog
+from app.ui.toast import show_toast_message
 
 
 _ICONS_DIR = os.path.abspath(
@@ -582,7 +583,7 @@ class ScreenEditorDialog(QDialog):
             if slot.camera is None:
                 self._drop_camera(idx, camera_id)
                 return
-        QMessageBox.information(self, "Grid Full", "All grid slots are already assigned.")
+        show_toast_message(self, "info", "Grid Full", "All grid slots are already assigned.")
 
     def _remove_existing_camera(self, camera_id: int) -> None:
         for slot in self._slots:
@@ -726,12 +727,11 @@ class ScreenCard(QFrame):
         load_btn.clicked.connect(lambda: self.loadRequested.emit(self.screen.id))
         buttons.addWidget(load_btn)
 
-        edit_btn = QPushButton("Edit")
+        edit_btn = self._icon_action_button("edit.svg", "Edit screen", "#3578f6", "#4e8cff")
         edit_btn.clicked.connect(lambda: self.editRequested.emit(self.screen.id))
         buttons.addWidget(edit_btn)
 
-        delete_btn = QPushButton("Delete")
-        delete_btn.setObjectName("dangerButton")
+        delete_btn = self._icon_action_button("trash.svg", "Delete screen", "#ef4444", "#ff6464")
         delete_btn.clicked.connect(lambda: self.deleteRequested.emit(self.screen.id))
         buttons.addWidget(delete_btn)
         root.addLayout(buttons)
@@ -860,6 +860,34 @@ class ScreenCard(QFrame):
             }
             """
         )
+
+    def _icon_action_button(self, icon_name: str, tooltip: str, bg: str, border: str, size: int = 34) -> QToolButton:
+        btn = QToolButton()
+        btn.setToolTip(tooltip)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setFixedSize(size, size)
+        btn.setStyleSheet(
+            f"""
+            QToolButton {{
+                background: {bg};
+                border: 1px solid {border};
+                border-radius: {size // 2}px;
+            }}
+            QToolButton:hover {{
+                border-color: #f8fafc;
+            }}
+            QToolButton:disabled {{
+                background: #2b2d33;
+                border-color: #3b3f47;
+            }}
+            """
+        )
+        icon_file = _icon_path(icon_name)
+        if os.path.isfile(icon_file):
+            icon_px = max(12, size - 16)
+            btn.setIcon(QIcon(icon_file))
+            btn.setIconSize(QSize(icon_px, icon_px))
+        return btn
 
     def mouseDoubleClickEvent(self, event) -> None:  # type: ignore[override]
         if event.button() == Qt.MouseButton.LeftButton:
@@ -1032,7 +1060,7 @@ class ScreenManagerWidget(QWidget):
         try:
             self.screen_store.load()
         except Exception as exc:
-            QMessageBox.critical(self, "Screen Error", str(exc))
+            show_toast_message(self, "error", "Screen Error", str(exc))
         self.refresh_cards()
 
     def refresh_cards(self, *_args) -> None:
@@ -1074,12 +1102,12 @@ class ScreenManagerWidget(QWidget):
         try:
             if screen is None:
                 created = self.screen_store.create_screen(dialog.payload)
-                QMessageBox.information(self, "Screen Saved", f"Screen #{created.id} created successfully.")
+                show_toast_message(self, "success", "Screen Saved", f"Screen #{created.id} created successfully.")
             else:
                 updated = self.screen_store.update_screen(dialog.payload)
-                QMessageBox.information(self, "Screen Saved", f"Screen #{updated.id} updated successfully.")
+                show_toast_message(self, "success", "Screen Saved", f"Screen #{updated.id} updated successfully.")
         except Exception as exc:
-            QMessageBox.critical(self, "Screen Error", str(exc))
+            show_toast_message(self, "error", "Screen Error", str(exc))
             return
         self.refresh_cards()
 
@@ -1087,18 +1115,19 @@ class ScreenManagerWidget(QWidget):
         screen = self._screen_by_id(screen_id)
         if screen is None:
             return
-        result = QMessageBox.question(
-            self,
-            "Delete Screen",
-            f"Delete screen #{screen.id}?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        confirmed = PrimeConfirmDialog.ask(
+            parent=self,
+            title="Delete Screen",
+            message=f"Delete screen #{screen.id}?",
+            ok_text="Delete",
+            cancel_text="Cancel",
         )
-        if result != QMessageBox.StandardButton.Yes:
+        if not confirmed:
             return
         try:
             self.screen_store.delete_screen(screen_id)
         except Exception as exc:
-            QMessageBox.critical(self, "Screen Error", str(exc))
+            show_toast_message(self, "error", "Screen Error", str(exc))
             return
         self.refresh_cards()
 

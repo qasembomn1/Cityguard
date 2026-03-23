@@ -234,3 +234,46 @@ class PrimeToastHost(QWidget):
         y = top_left.y() + margin
         self.move(x, y)
         self.raise_()
+
+
+def toast_host_for(owner: Optional[QWidget]) -> Optional[PrimeToastHost]:
+    if owner is None:
+        return None
+
+    current: Optional[QWidget] = owner
+    while current is not None:
+        for attr_name in ("toast", "_prime_toast_host"):
+            host = getattr(current, attr_name, None)
+            if isinstance(host, PrimeToastHost):
+                return host
+        current = current.parentWidget()
+
+    target = owner.window() if owner.window() is not None else owner
+    for attr_name in ("toast", "_prime_toast_host"):
+        host = getattr(target, attr_name, None)
+        if isinstance(host, PrimeToastHost):
+            return host
+
+    return None
+
+
+def show_toast_message(
+    owner: Optional[QWidget],
+    severity: str,
+    summary: str,
+    detail: str = "",
+    life: int = 0,
+) -> None:
+    host = toast_host_for(owner)
+    if host is None:
+        return
+
+    duration = life if life > 0 else (4200 if severity == "error" else 3200)
+    if severity == "success":
+        host.success(summary, detail, duration)
+    elif severity == "warn":
+        host.warn(summary, detail, duration)
+    elif severity == "error":
+        host.error(summary, detail, duration)
+    else:
+        host.info(summary, detail, duration)

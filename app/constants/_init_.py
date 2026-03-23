@@ -3,8 +3,11 @@ class Constants:
     SURFACE_B = "#2f3133"
     SIDEBAR_W = 64
     DARK_BG = "#0d0f12"
+    PRIMARY = "#1456be"
+    SUCCESS = "#16a34a"
+    ERROR = "#dc2626"
     SIDEBAR_BG = "#13161b"
-    ACCENT = "#e53935"
+    ACCENT = "#dc2626"
     TEXT_DIM = "#5a6070"
     TEXT_MAIN = "#c8cdd8"
     BORDER = "#1e2229"

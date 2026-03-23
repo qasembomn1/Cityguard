@@ -17,7 +17,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
-    QMessageBox,
     QScrollArea,
     QSizePolicy,
     QSpinBox,
@@ -31,6 +30,7 @@ from app.models.settings import AlarmSetting, RecordSetting, RepeatedSetting
 from app.services.home.settings_service import SettingsService
 from app.store.home.setting.settings_store import SettingsStore
 from app.ui.button import PrimeButton
+from app.ui.confirm_dialog import PrimeConfirmDialog
 from app.ui.toast import PrimeToastHost
 from app.widgets.svg_widget import SvgWidget
 
@@ -139,6 +139,7 @@ class SettingsPage(QWidget):
 
         self.server_interface_select = QComboBox()
         self.server_interface_select.addItem("Select interface", "")
+        self.server_interface_select.currentIndexChanged.connect(self._on_server_interface_changed)
         self.server_ip_address = self._make_line_edit("192.168.1.10")
         self.server_subnet_mask = self._make_line_edit("255.255.255.0")
         self.server_gateway = self._make_line_edit("192.168.1.1")
@@ -758,14 +759,7 @@ class SettingsPage(QWidget):
         system_actions.addWidget(self._server_cancel_shutdown_btn)
         system_actions.addStretch(1)
         layout.addWidget(system_panel)
-
-        layout.addWidget(
-            self._note_card(
-                "Payload note",
-                "The network write endpoints still use common keys like `interface`, `ip_address`, `subnet_mask`, `gateway`, `prefix_length`, and `dns`. If your backend expects different field names, send that schema and the form can be mapped exactly.",
-            )
-        )
-        layout.addStretch(1)
+        
         return page
 
     def _wrap_page(self, page: QWidget) -> QScrollArea:
@@ -974,17 +968,304 @@ class SettingsPage(QWidget):
         visit(value)
         return options
 
+    def _on_server_interface_changed(self, _index: int) -> None:
+        self._sync_server_form_from_selected_interface()
+        self._fill_record_media_server_ip_from_current_server()
+
+    def _dns_text_from_value(self, value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, dict):
+            for key in ("dns", "servers", "nameservers", "items", "values", "data", "result", "payload"):
+                nested = value.get(key)
+                text = self._dns_text_from_value(nested)
+                if text:
+                    return text
+            return ""
+        if isinstance(value, (list, tuple, set)):
+            parts: list[str] = []
+            for item in value:
+                text = self._dns_text_from_value(item)
+                if text:
+                    if "," in text:
+                        parts.extend([chunk.strip() for chunk in text.split(",") if chunk.strip()])
+                    else:
+                        parts.append(text)
+            deduped: list[str] = []
+            seen: set[str] = set()
+            for entry in parts:
+                if entry in seen:
+                    continue
+                seen.add(entry)
+                deduped.append(entry)
+            return ", ".join(deduped)
+        return str(value).strip()
+
+    def _network_snapshot_from_item(
+        self,
+        item: dict[str, Any],
+        inherited_interface: str = "",
+    ) -> dict[str, str]:
+        interface_name = str(
+            item.get("interface")
+            or item.get("interface_name")
+            or item.get("device")
+            or item.get("name")
+            or inherited_interface
+            or ""
+        ).strip()
+
+        ipv4_value = item.get("ipv4")
+        ipv4 = ipv4_value if isinstance(ipv4_value, dict) else {}
+
+        ip_address = str(
+            item.get("ip_address")
+            or item.get("ip")
+            or item.get("address")
+            or item.get("local_ip")
+            or item.get("server_ip")
+            or ipv4.get("ip_address")
+            or ipv4.get("ip")
+            or ipv4.get("address")
+            or ""
+        ).strip()
+        subnet_mask = str(
+            item.get("subnet_mask")
+            or item.get("netmask")
+            or item.get("mask")
+            or ipv4.get("subnet_mask")
+            or ipv4.get("netmask")
+            or ipv4.get("mask")
+            or ""
+        ).strip()
+        gateway = str(
+            item.get("gateway")
+            or item.get("default_gateway")
+            or ipv4.get("gateway")
+            or ""
+        ).strip()
+        prefix_length = str(
+            item.get("prefix_length")
+            or item.get("prefix")
+            or item.get("cidr")
+            or ipv4.get("prefix_length")
+            or ipv4.get("prefix")
+            or ""
+        ).strip()
+        dns = self._dns_text_from_value(
+            item.get("dns")
+            or item.get("dns_servers")
+            or item.get("nameservers")
+            or item.get("name_servers")
+            or ipv4.get("dns")
+            or item.get("resolv")
+        )
+        state = str(
+            item.get("state")
+            or item.get("status")
+            or item.get("operstate")
+            or item.get("link_state")
+            or item.get("carrier")
+            or ipv4.get("state")
+            or ""
+        ).strip()
+        return {
+            "interface": interface_name,
+            "ip_address": ip_address,
+            "subnet_mask": subnet_mask,
+            "gateway": gateway,
+            "prefix_length": prefix_length,
+            "dns": dns,
+            "state": state,
+        }
+
+    def _network_snapshots_from_value(
+        self,
+        value: Any,
+        inherited_interface: str = "",
+    ) -> list[dict[str, str]]:
+        snapshots: list[dict[str, str]] = []
+        seen_keys: set[str] = set()
+
+        def add_snapshot(snapshot: dict[str, str]) -> None:
+            has_data = any(
+                snapshot.get(key, "")
+                for key in ("interface", "ip_address", "subnet_mask", "gateway", "prefix_length", "dns", "state")
+            )
+            if not has_data:
+                return
+            key = "|".join(
+                snapshot.get(part, "")
+                for part in ("interface", "ip_address", "subnet_mask", "gateway", "prefix_length", "dns", "state")
+            )
+            if key in seen_keys:
+                return
+            seen_keys.add(key)
+            snapshots.append(snapshot)
+
+        def visit(node: Any, parent_interface: str = "") -> None:
+            if isinstance(node, dict):
+                snapshot = self._network_snapshot_from_item(node, parent_interface)
+                add_snapshot(snapshot)
+                next_interface = snapshot.get("interface", "") or parent_interface
+                for key, nested in node.items():
+                    inferred = next_interface
+                    if not inferred and isinstance(key, str):
+                        candidate = key.strip()
+                        if candidate and " " not in candidate and "/" not in candidate:
+                            inferred = candidate
+                    if isinstance(nested, (dict, list, tuple)):
+                        visit(nested, inferred)
+                return
+            if isinstance(node, (list, tuple)):
+                for entry in node:
+                    visit(entry, parent_interface)
+
+        visit(value, inherited_interface)
+        return snapshots
+
+    def _snapshot_score(self, snapshot: dict[str, str]) -> int:
+        return sum(
+            1
+            for key in ("ip_address", "subnet_mask", "gateway", "prefix_length", "dns", "state")
+            if snapshot.get(key, "").strip()
+        )
+
+    def _snapshot_is_active(self, snapshot: dict[str, str]) -> bool:
+        state = str(snapshot.get("state", "")).strip().lower()
+        if not state:
+            return False
+        active_markers = ("up", "active", "connected", "running", "online", "yes", "true")
+        return any(marker in state for marker in active_markers)
+
+    def _preferred_interface_name(self) -> str:
+        snapshots = self._merged_network_snapshots()
+        for snapshot in snapshots:
+            interface_name = str(snapshot.get("interface", "")).strip()
+            if interface_name and self._snapshot_is_active(snapshot):
+                return interface_name
+        for snapshot in snapshots:
+            interface_name = str(snapshot.get("interface", "")).strip()
+            if interface_name and str(snapshot.get("ip_address", "")).strip():
+                return interface_name
+        return ""
+
+    def _interfaces_with_detected_ip(self) -> set[str]:
+        result: set[str] = set()
+        for snapshot in self._network_snapshots_from_value(self.store.network_ips):
+            interface_name = str(snapshot.get("interface", "")).strip()
+            if not interface_name:
+                continue
+            ip_address = str(snapshot.get("ip_address", "")).strip()
+            if ip_address:
+                result.add(interface_name)
+        return result
+
+    def _validate_interface_for_network_write(self, interface_name: str) -> None:
+        allowed = self._interfaces_with_detected_ip()
+        if not allowed:
+            return
+        if interface_name in allowed:
+            return
+        preferred = self._preferred_interface_name()
+        if preferred and preferred in allowed:
+            raise ValueError(
+                f"Interface '{interface_name}' is not active. Select '{preferred}' or another active interface."
+            )
+        raise ValueError(f"Interface '{interface_name}' is not active. Select an active interface.")
+
+    def _merged_network_snapshots(self) -> list[dict[str, str]]:
+        merged: list[dict[str, str]] = []
+        by_interface: dict[str, dict[str, str]] = {}
+        for source in (self.store.network_ips, self.store.network_interfaces):
+            for snapshot in self._network_snapshots_from_value(source):
+                interface_name = snapshot.get("interface", "").strip()
+                if not interface_name:
+                    merged.append(snapshot)
+                    continue
+                existing = by_interface.get(interface_name)
+                if existing is None or self._snapshot_score(snapshot) > self._snapshot_score(existing):
+                    by_interface[interface_name] = snapshot
+        merged.extend(by_interface.values())
+        return merged
+
+    def _snapshot_for_selected_interface(self) -> dict[str, str] | None:
+        interface_name = str(self.server_interface_select.currentData() or "").strip()
+        if not interface_name:
+            return None
+        needle = interface_name.lower()
+        for snapshot in self._merged_network_snapshots():
+            if str(snapshot.get("interface", "")).strip().lower() == needle:
+                return snapshot
+        return None
+
+    def _current_server_ip_from_network(self) -> str:
+        selected = self._snapshot_for_selected_interface()
+        if selected is not None:
+            value = str(selected.get("ip_address", "")).strip()
+            if value:
+                return value
+        for snapshot in self._merged_network_snapshots():
+            value = str(snapshot.get("ip_address", "")).strip()
+            if value:
+                return value
+        return ""
+
+    def _fill_record_media_server_ip_from_current_server(self) -> None:
+        if self.record_media_server_ip.text().strip():
+            return
+        current_ip = self._current_server_ip_from_network()
+        if current_ip:
+            self.record_media_server_ip.setText(current_ip)
+
+    def _sync_server_form_from_selected_interface(self) -> None:
+        snapshot = self._snapshot_for_selected_interface()
+        if snapshot is None:
+            return
+        self.server_ip_address.setText(snapshot.get("ip_address", ""))
+        self.server_subnet_mask.setText(snapshot.get("subnet_mask", ""))
+        self.server_gateway.setText(snapshot.get("gateway", ""))
+        self.server_prefix_length.setText(snapshot.get("prefix_length", ""))
+        self.server_dns.setText(snapshot.get("dns", ""))
+
     def _refresh_server_interface_options(self) -> None:
         current_value = str(self.server_interface_select.currentData() or "").strip()
         options = self._interface_options_from_value(self.store.network_interfaces)
+        for label, value in self._interface_options_from_value(self.store.network_ips):
+            if any(existing_value == value for _existing_label, existing_value in options):
+                continue
+            options.append((label, value))
+        snapshots_by_interface = {
+            str(snapshot.get("interface", "")).strip(): snapshot
+            for snapshot in self._merged_network_snapshots()
+            if str(snapshot.get("interface", "")).strip()
+        }
         self.server_interface_select.blockSignals(True)
         self.server_interface_select.clear()
         self.server_interface_select.addItem("Select interface", "")
         for label, value in options:
-            self.server_interface_select.addItem(label, value)
+            display_label = str(label)
+            snapshot = snapshots_by_interface.get(str(value).strip())
+            if snapshot is not None:
+                ip_text = str(snapshot.get("ip_address", "")).strip()
+                state_text = str(snapshot.get("state", "")).strip()
+                extras = [part for part in (ip_text, state_text) if part]
+                if extras:
+                    display_label = f"{display_label} ({' | '.join(extras)})"
+            self.server_interface_select.addItem(display_label, value)
         selected_index = self.server_interface_select.findData(current_value)
+        preferred_interface = self._preferred_interface_name()
+        if preferred_interface:
+            current_has_snapshot = bool(current_value and current_value in snapshots_by_interface)
+            if selected_index < 0 or not current_has_snapshot:
+                preferred_index = self.server_interface_select.findData(preferred_interface)
+                if preferred_index >= 0:
+                    selected_index = preferred_index
         self.server_interface_select.setCurrentIndex(selected_index if selected_index >= 0 else 0)
         self.server_interface_select.blockSignals(False)
+        self._sync_server_form_from_selected_interface()
 
     def _clear_server_form(self) -> None:
         self.server_interface_select.setCurrentIndex(0)
@@ -994,11 +1275,16 @@ class SettingsPage(QWidget):
         self.server_prefix_length.clear()
         self.server_dns.clear()
 
-    def _server_network_payload(self) -> dict[str, Any]:
+    def _server_network_payload(self, require_interface_name: bool = False) -> dict[str, Any]:
         payload: dict[str, Any] = {}
         interface_name = str(self.server_interface_select.currentData() or "").strip()
         if interface_name:
+            if require_interface_name:
+                self._validate_interface_for_network_write(interface_name)
+            payload["interface_name"] = interface_name
             payload["interface"] = interface_name
+        elif require_interface_name:
+            raise ValueError("Interface name required.")
 
         ip_address = self.server_ip_address.text().strip()
         if ip_address:
@@ -1025,9 +1311,40 @@ class SettingsPage(QWidget):
             raise ValueError("Select an interface or fill the network fields.")
         return payload
 
+    def _server_set_static_ip_payload(self) -> dict[str, Any]:
+        interface_name = str(self.server_interface_select.currentData() or "").strip()
+        if not interface_name:
+            raise ValueError("Interface name required.")
+        self._validate_interface_for_network_write(interface_name)
+
+        ip_address = self.server_ip_address.text().strip()
+        subnet_mask = self.server_subnet_mask.text().strip()
+        gateway = self.server_gateway.text().strip()
+        dns_text = self.server_dns.text().strip()
+        dns_servers = [item.strip() for item in dns_text.split(",") if item.strip()] if dns_text else []
+
+        if not ip_address:
+            raise ValueError("IP address required.")
+        if not subnet_mask:
+            raise ValueError("Subnet mask required.")
+
+        return {
+            "interface_name": interface_name,
+            "interface": interface_name,
+            "ip_address": ip_address,
+            "subnet_mask": subnet_mask,
+            "gateway": gateway,
+            "dns_servers": dns_servers,
+        }
+
     def _confirm_server_action(self, title: str, prompt: str) -> bool:
-        result = QMessageBox.question(self, title, prompt)
-        return result == QMessageBox.StandardButton.Yes
+        return PrimeConfirmDialog.ask(
+            parent=self,
+            title=title,
+            message=prompt,
+            ok_text="Confirm",
+            cancel_text="Cancel",
+        )
 
     def _set_active_tab(self, tab_id: str) -> None:
         index_map = {
@@ -1165,7 +1482,10 @@ class SettingsPage(QWidget):
             if notify:
                 self._toast_error("Server Settings", self.store.last_error or "Failed to load network interfaces.")
             return False
+        # Best-effort fetch for current IP assignments used to auto-fill network fields.
+        self.store.load_network_ips()
         self._refresh_server_interface_options()
+        self._fill_record_media_server_ip_from_current_server()
         return True
 
     def reload_all_settings(self, notify: bool = False) -> None:
@@ -1193,7 +1513,7 @@ class SettingsPage(QWidget):
 
     def _set_static_ip(self) -> None:
         try:
-            payload = self._server_network_payload()
+            payload = self._server_set_static_ip_payload()
         except ValueError as exc:
             self._toast_error("Server Settings", str(exc))
             return
@@ -1209,7 +1529,7 @@ class SettingsPage(QWidget):
 
     def _add_network_ip(self) -> None:
         try:
-            payload = self._server_network_payload()
+            payload = self._server_network_payload(require_interface_name=True)
         except ValueError as exc:
             self._toast_error("Server Settings", str(exc))
             return
@@ -1225,7 +1545,7 @@ class SettingsPage(QWidget):
 
     def _remove_network_ip(self) -> None:
         try:
-            payload = self._server_network_payload()
+            payload = self._server_network_payload(require_interface_name=True)
         except ValueError as exc:
             self._toast_error("Server Settings", str(exc))
             return
@@ -1308,4 +1628,3 @@ class SettingsPage(QWidget):
         path.addRect(QRectF(self.rect()))
         p.fillPath(path, QColor(Constants.DARK_BG))   # dark bg — cards float above it
         super().paintEvent(event)
-

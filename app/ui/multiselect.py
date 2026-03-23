@@ -1,5 +1,5 @@
 import sys
-from PySide6.QtCore import QEvent, QPoint, Qt, Signal
+from PySide6.QtCore import QEvent, QPoint, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen, QBrush
 from PySide6.QtWidgets import (
     QApplication,
@@ -10,11 +10,13 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
 )
 
 
 class SelectItem(QWidget):
     toggled = Signal(object, bool)
+    _item_height = 42
 
     def __init__(self, text, value, checked=False, parent=None):
         super().__init__(parent)
@@ -22,8 +24,14 @@ class SelectItem(QWidget):
         self.value = value
         self.checked = checked
         self.hovered = False
-        self.setFixedHeight(42)
+        self.setFixedHeight(self._item_height)
         self.setCursor(Qt.PointingHandCursor)
+
+    def sizeHint(self):
+        return QSize(0, self._item_height)
+
+    def minimumSizeHint(self):
+        return QSize(0, self._item_height)
 
     def set_checked(self, checked: bool):
         self.checked = checked
@@ -95,31 +103,25 @@ class SelectItem(QWidget):
 
 class PopupPanel(QFrame):
     selection_changed = Signal()
+    _padding = 10
+    _min_content_height = 24
 
     def __init__(self, parent=None):
         super().__init__(parent, Qt.Popup | Qt.FramelessWindowHint)
-        self.setAttribute(Qt.WA_TranslucentBackground, False)
-        self.setAutoFillBackground(True)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WA_NoSystemBackground, True)
+        self.setAutoFillBackground(False)
         self.setObjectName("popupPanel")
         self.resize(440, 210)
 
         self.items = []
         self.selected_values = set()
 
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
-
-        self.container = QFrame()
+        self.container = QFrame(self)
         self.container.setObjectName("popupContainer")
         self.container.setAutoFillBackground(True)
-        outer.addWidget(self.container)
 
-        container_layout = QVBoxLayout(self.container)
-        container_layout.setContentsMargins(10, 10, 10, 10)
-        container_layout.setSpacing(6)
-
-        self.scroll = QScrollArea()
+        self.scroll = QScrollArea(self.container)
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QFrame.NoFrame)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -132,13 +134,11 @@ class PopupPanel(QFrame):
         self.content_layout.addStretch()
 
         self.scroll.setWidget(self.content)
-        container_layout.addWidget(self.scroll)
 
         self.setStyleSheet("""
             #popupPanel {
-                background-color: #1b1c1f;
-                border: 1px solid #101114;
-                border-radius: 10px;
+                background: transparent;
+                border: none;
             }
             #popupContainer {
                 background-color: #1b1c1f;
@@ -166,6 +166,21 @@ class PopupPanel(QFrame):
                 height: 0px;
             }
         """)
+        self._sync_shell_geometry()
+
+    def resizeEvent(self, event):
+        self._sync_shell_geometry()
+        super().resizeEvent(event)
+
+    def _sync_shell_geometry(self) -> None:
+        self.container.setGeometry(self.rect())
+        inner_rect = self.container.rect().adjusted(
+            self._padding,
+            self._padding,
+            -self._padding,
+            -self._padding,
+        )
+        self.scroll.setGeometry(inner_rect)
 
     def set_options(self, options, selected_values=None):
         self.selected_values = set(selected_values or [])
@@ -178,8 +193,7 @@ class PopupPanel(QFrame):
                 widget.deleteLater()
 
         for option in options:
-            text = option["label"]
-            value = option["value"]
+            text, value = PrimeMultiSelect.normalize_option(option)
             item_widget = SelectItem(text, value, value in self.selected_values)
             item_widget.toggled.connect(self.on_item_toggled)
             self.items.append(item_widget)
@@ -194,18 +208,35 @@ class PopupPanel(QFrame):
             self.selected_values.discard(value)
         self.selection_changed.emit()
 
+    def preferred_height(self) -> int:
+        item_height = sum(item.sizeHint().height() for item in self.items)
+        spacing = self.content_layout.spacing() * max(0, len(self.items) - 1)
+        margins = self.content_layout.contentsMargins()
+        content_height = (
+            margins.top()
+            + item_height
+            + spacing
+            + margins.bottom()
+        )
+        return max(
+            (self._padding * 2) + content_height,
+            (self._padding * 2) + self._min_content_height,
+        )
+
 
 class PrimeMultiSelect(QWidget):
     selection_changed = Signal(list)
 
     def __init__(self, options=None, placeholder="Select", parent=None):
         super().__init__(parent)
-        self.options = options or []
+        self.setObjectName("primeMultiSelect")
+        self.options = list(options or [])
         self.selected_values = []
         self.placeholder = placeholder
         self.popup = None
 
-        self.setFixedWidth(440)
+        self.setMinimumWidth(180)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -257,12 +288,22 @@ class PrimeMultiSelect(QWidget):
 
         self.refresh_label()
 
+    @staticmethod
+    def normalize_option(option):
+        if isinstance(option, dict):
+            return str(option.get("label", "")), option.get("value")
+        return str(option), option
+
     def set_options(self, options):
-        self.options = options
+        self.options = list(options or [])
+        valid_values = {self.normalize_option(option)[1] for option in self.options}
+        self.selected_values = [value for value in self.selected_values if value in valid_values]
         self.refresh_label()
 
     def set_value(self, values):
-        self.selected_values = list(values)
+        valid_values = {self.normalize_option(option)[1] for option in self.options}
+        incoming_values = list(values or [])
+        self.selected_values = [value for value in incoming_values if value in valid_values]
         self.refresh_label()
 
     def value(self):
@@ -270,8 +311,9 @@ class PrimeMultiSelect(QWidget):
 
     def refresh_label(self):
         labels = [
-            opt["label"] for opt in self.options
-            if opt["value"] in self.selected_values
+            label for opt in self.options
+            for label, value in [self.normalize_option(opt)]
+            if value in self.selected_values
         ]
 
         if labels:
@@ -283,6 +325,46 @@ class PrimeMultiSelect(QWidget):
         popup_visible = bool(self.popup is not None and self.popup.isVisible())
         self._arrow.setText("⌃" if popup_visible else "⌄")
 
+    def _popup_screen_geometry(self):
+        anchor = self.button.mapToGlobal(self.button.rect().center())
+        screen = QApplication.screenAt(anchor)
+        if screen is None and self.window().windowHandle() is not None:
+            screen = self.window().windowHandle().screen()
+        if screen is None:
+            screen = QApplication.primaryScreen()
+        return screen.availableGeometry() if screen is not None else None
+
+    def _popup_position(self, popup_width: int, popup_height: int) -> QPoint:
+        gap = 6
+        top_left = self.button.mapToGlobal(QPoint(0, 0))
+        top_right = self.button.mapToGlobal(QPoint(self.button.width(), 0))
+        bottom_left = self.button.mapToGlobal(QPoint(0, self.button.height()))
+        screen_rect = self._popup_screen_geometry()
+        x = top_left.x()
+
+        if screen_rect is None:
+            return QPoint(x, bottom_left.y() + gap)
+
+        space_below = screen_rect.bottom() - bottom_left.y()
+        space_above = top_left.y() - screen_rect.top()
+
+        if space_below >= popup_height or space_below >= space_above:
+            y = bottom_left.y() + gap
+        else:
+            y = top_left.y() - popup_height - gap
+
+        if x + popup_width - 1 > screen_rect.right():
+            x = top_right.x() - popup_width
+
+        min_x = screen_rect.left()
+        max_x = max(min_x, screen_rect.right() - popup_width + 1)
+        min_y = screen_rect.top()
+        max_y = max(min_y, screen_rect.bottom() - popup_height + 1)
+
+        x = min(max(x, min_x), max_x)
+        y = min(max(y, min_y), max_y)
+        return QPoint(x, y)
+
     def toggle_popup(self):
         if self.popup is None:
             return
@@ -292,10 +374,15 @@ class PrimeMultiSelect(QWidget):
             return
 
         self.popup.set_options(self.options, self.selected_values)
+        screen_rect = self._popup_screen_geometry()
+        popup_width = self.button.width() or self.width() or 180
+        popup_height = self.popup.preferred_height()
+        if screen_rect is not None:
+            popup_width = min(popup_width, screen_rect.width())
+            popup_height = min(popup_height, screen_rect.height())
 
-        pos = self.button.mapToGlobal(QPoint(0, self.button.height() + 6))
-        self.popup.move(pos)
-        self.popup.resize(self.width(), 210)
+        self.popup.resize(popup_width, popup_height)
+        self.popup.move(self._popup_position(popup_width, popup_height))
         self.popup.show()
         self.refresh_label()
 
@@ -303,8 +390,9 @@ class PrimeMultiSelect(QWidget):
         if self.popup is None:
             return
         self.selected_values = [
-            opt["value"] for opt in self.options
-            if opt["value"] in self.popup.selected_values
+            value for opt in self.options
+            for _, value in [self.normalize_option(opt)]
+            if value in self.popup.selected_values
         ]
         self.refresh_label()
         self.selection_changed.emit(self.selected_values)

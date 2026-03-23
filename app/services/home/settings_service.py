@@ -11,17 +11,25 @@ class SettingsService:
     def __init__(self, api: ApiService | None = None) -> None:
         self.api = api or ApiService(os.getenv("Base_URL"))
 
+    def _should_retry_fallback(self, exc: Exception) -> bool:
+        message = str(exc)
+        return "[404]" in message or "[405]" in message
+
     def _request_with_fallback(
         self,
         attempts: Iterable[tuple[str, str]],
         data: Dict[str, Any] | None = None,
     ) -> Any:
+        attempts_list = list(attempts)
         last_exc: Exception | None = None
-        for method, path in attempts:
+        for index, (method, path) in enumerate(attempts_list):
             try:
                 return self.api.request(method, path, data=data, auth=True)
             except Exception as exc:
                 last_exc = exc
+                is_last_attempt = index == len(attempts_list) - 1
+                if is_last_attempt or not self._should_retry_fallback(exc):
+                    break
         if last_exc is not None:
             raise last_exc
         raise RuntimeError("No settings API attempts configured.")

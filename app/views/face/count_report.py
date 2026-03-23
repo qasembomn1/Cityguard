@@ -10,11 +10,11 @@ from app.views.face.report import BaseFaceReportPage
 class FaceCountReportPage(BaseFaceReportPage):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(
+            current_path="/report/face_count",
             endpoint="/api/v1/face_report/count_report",
             title="Face Count Report",
             hint=(
-                "Run the face count report from a top filter panel like the LPR pages. "
-                "This posts `date_from`, `date_to`, and `camera_ids` to `/api/v1/face_report/count_report`."
+                "Run the face count report from the left filter sidebar like the search pages. "
             ),
             export_prefix="face-count-report",
             toast_title="Face Count Report",

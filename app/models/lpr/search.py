@@ -70,14 +70,21 @@ def _color_names(value: Any) -> List[str]:
 def _iso_text(value: Any) -> Optional[str]:
     if value is None or value == "":
         return None
+    parsed: Optional[datetime]
     if isinstance(value, datetime):
-        if value.tzinfo is None:
-            value = value.replace(tzinfo=SEARCH_TIMEZONE)
-        else:
-            value = value.astimezone(SEARCH_TIMEZONE)
-        return value.isoformat(timespec="seconds")
-    text = str(value).strip()
-    return text or None
+        parsed = value
+    else:
+        text = str(value).strip()
+        if not text:
+            return None
+        parsed = _as_datetime(text)
+        if parsed is None:
+            return text
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=SEARCH_TIMEZONE)
+    parsed_utc = parsed.astimezone(timezone.utc)
+    return parsed_utc.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def _to_search_timezone(value: datetime) -> datetime:

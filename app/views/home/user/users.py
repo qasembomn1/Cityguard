@@ -4,20 +4,15 @@ import os
 import sys
 from typing import Any, Dict, List, Optional
 
-from PySide6.QtCore import Qt, Signal,QRectF
+from PySide6.QtCore import QSize, Qt, Signal,QRectF
 from PySide6.QtGui import QIcon,QColor,QPainter,QPainterPath
 from app.constants._init_ import Constants
 from PySide6.QtWidgets import (
-    QApplication,
-    QDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QMainWindow,
-    QMessageBox,
-    QPushButton,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -32,8 +27,13 @@ from app.services.home.user.user_service import UserService
 from app.store.home.user.department_store import DepartmentCrudStore
 from app.store.home.user.role_store import RoleStore
 from app.store.home.user.user_store import UserStore
+from app.ui.button import PrimeButton
+from app.ui.confirm_dialog import PrimeConfirmDialog
+from app.ui.dialog import PrimeDialog
+from app.ui.input import PrimeInput
 from app.ui.select import PrimeSelect
 from app.ui.table import PrimeDataTable, PrimeTableColumn
+from app.ui.toast import show_toast_message
 from app.views.home.user._shared import USER_MANAGEMENT_SIDEBAR_STYLES, UserManagementSidebar
 
 
@@ -46,7 +46,7 @@ def _icon_path(name: str) -> str:
     return os.path.join(_ICONS_DIR, name)
 
 
-class UserDialog(QDialog):
+class UserDialog(PrimeDialog):
     submitted = Signal(dict, bool)
 
     def __init__(
@@ -56,47 +56,44 @@ class UserDialog(QDialog):
         user: Optional[UserResponse] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
-        super().__init__(parent)
+        title = "Edit User" if user is not None else "Add User"
+        super().__init__(
+            title=title,
+            parent=parent,
+            width=740,
+            height=500,
+            ok_text="Save",
+            cancel_text="Cancel",
+        )
         self.user = user
         self.is_edit_mode = user is not None
         self._role_options = list(role_options)
         self._department_options = list(department_options)
 
-        self.setWindowTitle("User")
-        self.resize(720, 440)
-
-        root = QVBoxLayout(self)
-        root.setContentsMargins(18, 18, 18, 18)
-        root.setSpacing(16)
-
-        grid = QGridLayout()
+        # ── form content ──
+        form_widget = QWidget()
+        grid = QGridLayout(form_widget)
         grid.setHorizontalSpacing(14)
-        grid.setVerticalSpacing(14)
-        root.addLayout(grid)
+        grid.setVerticalSpacing(4)
+        grid.setContentsMargins(0, 0, 0, 0)
 
-        self.username_edit = QLineEdit()
-        self.username_edit.setPlaceholderText("Enter username")
+        self.username_edit = PrimeInput(placeholder_text="Enter username")
         grid.addWidget(self._field_block("Username *", self.username_edit), 0, 0)
 
-        self.password_edit = QLineEdit()
+        self.password_edit = PrimeInput(placeholder_text="Enter password")
         self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.password_edit.setPlaceholderText("Enter password")
         grid.addWidget(self._field_block("Password *", self.password_edit), 0, 1)
 
-        self.fullname_edit = QLineEdit()
-        self.fullname_edit.setPlaceholderText("Enter full name")
+        self.fullname_edit = PrimeInput(placeholder_text="Enter full name")
         grid.addWidget(self._field_block("Full Name *", self.fullname_edit), 1, 0)
 
-        self.email_edit = QLineEdit()
-        self.email_edit.setPlaceholderText("Enter email")
+        self.email_edit = PrimeInput(placeholder_text="Enter email")
         grid.addWidget(self._field_block("Email *", self.email_edit), 1, 1)
 
-        self.phone_edit = QLineEdit()
-        self.phone_edit.setPlaceholderText("Enter phone number")
+        self.phone_edit = PrimeInput(placeholder_text="Enter phone number")
         grid.addWidget(self._field_block("Phone *", self.phone_edit), 2, 0)
 
-        self.area_edit = QLineEdit()
-        self.area_edit.setPlaceholderText("Enter area")
+        self.area_edit = PrimeInput(placeholder_text="Enter area")
         grid.addWidget(self._field_block("Area *", self.area_edit), 2, 1)
 
         self.role_select = PrimeSelect(self._role_options, placeholder="Select Role")
@@ -109,27 +106,27 @@ class UserDialog(QDialog):
         grid.addWidget(self._field_block("Department *", self.department_select), 3, 1)
 
         self.password_hint = QLabel()
-        self.password_hint.setObjectName("usersDialogHint")
         self.password_hint.setWordWrap(True)
-        root.addWidget(self.password_hint)
+        self.password_hint.setStyleSheet("color: #8ea0bc; font-size: 12px;")
 
-        controls = QHBoxLayout()
-        controls.addStretch(1)
+        container = QWidget()
+        container_layout = QVBoxLayout(container)
+        container_layout.setContentsMargins(0, 0, 0, 0)
+        container_layout.setSpacing(12)
+        container_layout.addWidget(form_widget)
+        container_layout.addWidget(self.password_hint)
 
-        reset_btn = QPushButton("Reset")
+        self.set_content(container)
+
+        # ── footer: add Reset before Cancel ──
+        reset_btn = PrimeButton("Reset", variant="secondary", mode="outline", size="sm", width=80)
         reset_btn.clicked.connect(self._reset)
-        controls.addWidget(reset_btn)
+        self.footer_widget.layout().insertWidget(1, reset_btn)
 
-        cancel_btn = QPushButton("Cancel")
-        cancel_btn.clicked.connect(self.reject)
-        controls.addWidget(cancel_btn)
+        # ── redirect ok → _submit ──
+        self.ok_button.clicked.disconnect()
+        self.ok_button.clicked.connect(self._submit)
 
-        save_btn = QPushButton("Save")
-        save_btn.clicked.connect(self._submit)
-        controls.addWidget(save_btn)
-        root.addLayout(controls)
-
-        self._apply_style()
         self._reset()
 
     def _field_block(self, label_text: str, field: QWidget) -> QWidget:
@@ -137,51 +134,11 @@ class UserDialog(QDialog):
         layout = QVBoxLayout(wrapper)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
-
         label = QLabel(label_text)
-        label.setObjectName("usersDialogLabel")
+        label.setStyleSheet("color: #d8e1ee; font-size: 12px; font-weight: 700;")
         layout.addWidget(label)
         layout.addWidget(field)
         return wrapper
-
-    def _apply_style(self) -> None:
-        self.setStyleSheet(
-            """
-            QDialog {
-                background: #171a1f;
-                color: #f1f5f9;
-            }
-            QLineEdit {
-                background: #232831;
-                border: 1px solid #3a424f;
-                border-radius: 8px;
-                color: #f8fafc;
-                padding: 8px 10px;
-                min-height: 24px;
-            }
-            QPushButton {
-                background: #2b3340;
-                border: 1px solid #425062;
-                border-radius: 8px;
-                color: #f8fafc;
-                padding: 7px 14px;
-                font-weight: 600;
-            }
-            QPushButton:hover {
-                background: #35507f;
-                border-color: #4d76bb;
-            }
-            QLabel#usersDialogLabel {
-                color: #d8e1ee;
-                font-size: 12px;
-                font-weight: 700;
-            }
-            QLabel#usersDialogHint {
-                color: #8ea0bc;
-                font-size: 12px;
-            }
-            """
-        )
 
     def _fill(self, user: UserResponse) -> None:
         self.username_edit.setText(user.username)
@@ -228,19 +185,20 @@ class UserDialog(QDialog):
         department_id = self.department_select.value()
 
         if not username or not fullname or not email or not phone or not area:
-            QMessageBox.warning(self, "Missing", "All text fields are required.")
+            show_toast_message(self, "warn", "Missing", "All text fields are required.")
             return
         if not role_id or not department_id:
-            QMessageBox.warning(self, "Missing", "Role and department are required.")
+            show_toast_message(self, "warn", "Missing", "Role and department are required.")
             return
         if not self.is_edit_mode and not password.strip():
-            QMessageBox.warning(self, "Missing", "Password is required for new users.")
+            show_toast_message(self, "warn", "Missing", "Password is required for new users.")
             return
         if self.is_edit_mode and not password.strip():
             password = self.user.password if self.user is not None else ""
             if not password.strip():
-                QMessageBox.warning(
+                show_toast_message(
                     self,
+                    "warn",
                     "Missing",
                     "Password is required for updates because this API does not accept a missing password field.",
                 )
@@ -310,8 +268,7 @@ class UsersPage(QWidget):
         toolbar.setSpacing(10)
         main_layout.addLayout(toolbar)
 
-        self.new_btn = QPushButton("+ New")
-        self.new_btn.setObjectName("usersNewBtn")
+        self.new_btn = PrimeButton("+ New", variant="primary", mode="filled", size="sm", width=90)
         self.new_btn.clicked.connect(self.open_create_dialog)
         toolbar.addWidget(self.new_btn)
 
@@ -355,18 +312,7 @@ class UsersPage(QWidget):
             QWidget {
                 color: #f5f7fb;
             }
-            QPushButton#usersNewBtn {
-                background: #3b82f6;
-                border: none;
-                border-radius: 10px;
-                color: white;
-                font-size: 14px;
-                font-weight: 700;
-                padding: 9px 18px;
-            }
-            QPushButton#usersNewBtn:hover {
-                background: #2f6ce3;
-            }
+
             QLineEdit#usersSearchInput {
                 background: #2b2e34;
                 border: 1px solid #3a3e46;
@@ -570,6 +516,34 @@ class UsersPage(QWidget):
     def _department_cell_widget(self, row: Dict[str, Any]) -> QWidget:
         return self._badge_widget(str(row.get("department") or ""), "Unassigned")
 
+    def _action_button(self, icon_name: str, tooltip: str, bg: str, border: str, size: int = 34) -> QToolButton:
+        btn = QToolButton()
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setFixedSize(size, size)
+        btn.setToolTip(tooltip)
+        btn.setStyleSheet(
+            f"""
+            QToolButton {{
+                background: {bg};
+                border: 1px solid {border};
+                border-radius: {size // 2}px;
+            }}
+            QToolButton:hover {{
+                border-color: #f8fafc;
+            }}
+            QToolButton:disabled {{
+                background: #2b2d33;
+                border-color: #3b3f47;
+            }}
+            """
+        )
+        icon_file = _icon_path(icon_name)
+        if os.path.isfile(icon_file):
+            icon_px = max(12, size - 16)
+            btn.setIcon(QIcon(icon_file))
+            btn.setIconSize(QSize(icon_px, icon_px))
+        return btn
+
     def _action_widget(self, row: Dict[str, Any]) -> QWidget:
         user = row.get("_user")
         wrapper = QWidget()
@@ -578,25 +552,14 @@ class UsersPage(QWidget):
         layout.setSpacing(8)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        edit_btn = QToolButton()
-        edit_btn.setObjectName("usersIconBtn")
-        edit_btn.setToolTip("Edit user")
-        edit_icon = QIcon(_icon_path("edit.svg"))
-        if not edit_icon.isNull():
-            edit_btn.setIcon(edit_icon)
-        else:
-            edit_btn.setText("E")
+        if not isinstance(user, UserResponse):
+            return wrapper
+
+        edit_btn = self._action_button("edit.svg", "Edit user", "#3578f6", "#4e8cff")
         edit_btn.clicked.connect(lambda: self._open_dialog(user))
         layout.addWidget(edit_btn)
 
-        delete_btn = QToolButton()
-        delete_btn.setObjectName("usersDeleteBtn")
-        delete_btn.setToolTip("Delete user")
-        delete_icon = QIcon(_icon_path("trash.svg"))
-        if not delete_icon.isNull():
-            delete_btn.setIcon(delete_icon)
-        else:
-            delete_btn.setText("D")
+        delete_btn = self._action_button("trash.svg", "Delete user", "#ef4444", "#ff6464")
         delete_btn.clicked.connect(lambda: self._confirm_delete(user))
         layout.addWidget(delete_btn)
         return wrapper
@@ -605,21 +568,22 @@ class UsersPage(QWidget):
         if not isinstance(user, UserResponse):
             return
         display_name = user.fullname or user.username or f"User #{user.id}"
-        result = QMessageBox.question(
-            self,
-            "Delete Record",
-            f"Are you sure to delete '{display_name}'?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        confirmed = PrimeConfirmDialog.ask(
+            parent=self,
+            title="Delete User",
+            message=f"Are you sure you want to delete '{display_name}'? This action cannot be undone.",
+            ok_text="Delete",
+            cancel_text="Cancel",
         )
-        if result != QMessageBox.StandardButton.Yes:
+        if not confirmed:
             return
         self.user_store.delete_user(user.id)
 
     def _show_info(self, text: str) -> None:
-        QMessageBox.information(self, "Info", text)
+        show_toast_message(self, "info", "Info", text)
 
     def _show_error(self, text: str) -> None:
-        QMessageBox.critical(self, "Error", text)
+        show_toast_message(self, "error", "Error", text)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -628,4 +592,3 @@ class UsersPage(QWidget):
         path.addRect(QRectF(self.rect()))
         p.fillPath(path, QColor(Constants.DARK_BG))   # dark bg — cards float above it
         super().paintEvent(event)
-

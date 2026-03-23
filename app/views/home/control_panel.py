@@ -2,6 +2,7 @@ import os
 
 from PySide6.QtWidgets import (
     QWidget,
+    QFrame,
     QVBoxLayout,
     QHBoxLayout,
     QLabel,
@@ -13,7 +14,6 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import (
     Qt,
-    QPropertyAnimation,
     QEasingCurve,
     QVariantAnimation,
     Signal,
@@ -200,6 +200,22 @@ CONTROL_PANEL_TABS = [
 ]
 
 
+CONTROL_PANEL_CARD_ACCENTS = {
+    "Live View": ("#2563eb", "#38bdf8"),
+    "Playback": ("#0f766e", "#22c55e"),
+    "Search": ("#c2410c", "#f59e0b"),
+    "User Management": ("#7c3aed", "#a855f7"),
+    "List Management": ("#2563eb", "#818cf8"),
+    "Device Management": ("#0f766e", "#2dd4bf"),
+    "Activity Log": ("#be123c", "#fb7185"),
+    "Report": ("#1d4ed8", "#60a5fa"),
+    "Activation Management": ("#b45309", "#f59e0b"),
+    "Settings": ("#475569", "#94a3b8"),
+}
+def _tab_accent(tab: dict) -> tuple[str, str]:
+    return CONTROL_PANEL_CARD_ACCENTS.get(str(tab.get("name") or ""), ("#2563eb", "#60a5fa"))
+
+
 # ── SVG icon widget ───────────────────────────────────────────────────────────
 class _SvgIconWidget(QWidget):
     """Fixed-size widget that renders a QSvgRenderer centred inside itself."""
@@ -289,15 +305,17 @@ class ChildItemWidget(QWidget):
 class CardBody(QWidget):
     clicked = Signal(str)
 
-    _H      = 300   # h-48 = 192 px
-    _RADIUS = 30    # rounded-2xl ≈ 20 px
+    _H = 200
+    _RADIUS = 24
 
     def __init__(self, tab: dict, parent=None):
         super().__init__(parent)
         self.tab       = tab
         self._is_hov   = False
         self._shine_x  = 1.0    # 1 = off-right, -1 = off-left
-        self._chev_ang = 0.0    # 0 = ^ up, 180 = v down
+        self._accent_start_hex, self._accent_end_hex = _tab_accent(tab)
+        self._accent_start = QColor(self._accent_start_hex)
+        self._accent_end = QColor(self._accent_end_hex)
 
         self.setFixedHeight(self._H)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -312,31 +330,43 @@ class CardBody(QWidget):
 
         # content
         inner = QVBoxLayout(self)
-        inner.setContentsMargins(12, 18, 12, 18)
+        inner.setContentsMargins(16, 16, 16, 16)
         inner.setSpacing(10)
         inner.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         svg_path = _resolve_svg_path(tab.get("svg_icon", ""))
         self._svg_renderer = QSvgRenderer(svg_path)
-        self._icon_lbl = _SvgIconWidget(self._svg_renderer, size=52)
+        self._icon_lbl = _SvgIconWidget(self._svg_renderer, size=44)
         self._icon_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+        self._icon_shell = QFrame()
+        self._icon_shell.setFixedSize(82, 82)
+        self._icon_shell.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._icon_shell.setStyleSheet(
+            f"background: qlineargradient(x1:0,y1:0,x2:1,y2:1,"
+            f" stop:0 {self._accent_start_hex}, stop:1 {self._accent_end_hex});"
+            "border: 1px solid rgba(255, 255, 255, 0.18);"
+            "border-radius: 24px;"
+        )
+        icon_shell_layout = QVBoxLayout(self._icon_shell)
+        icon_shell_layout.setContentsMargins(18, 18, 18, 18)
+        icon_shell_layout.setSpacing(0)
+        icon_shell_layout.addWidget(self._icon_lbl, 0, Qt.AlignmentFlag.AlignCenter)
 
         self._name_lbl = QLabel(tab["name"])
         self._name_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._name_lbl.setWordWrap(True)
         f = QFont()
-        f.setPointSize(10)
-        f.setWeight(QFont.Weight.Light)
+        f.setPointSize(12)
+        f.setWeight(QFont.Weight.Medium)
         self._name_lbl.setFont(f)
         self._name_lbl.setStyleSheet(
-            f"color: {_TEXT}; background: transparent; border: none; letter-spacing: 0.3px;"
+            "color: #f8fafc; background: transparent; border: none;"
         )
         self._name_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
-        inner.addStretch()
-        inner.addWidget(self._icon_lbl, 0, Qt.AlignmentFlag.AlignHCenter)
+        inner.addWidget(self._icon_shell, 0, Qt.AlignmentFlag.AlignHCenter)
         inner.addWidget(self._name_lbl)
-        inner.addStretch()
 
         # shine animation
         self._shine_anim = QVariantAnimation(self)
@@ -344,18 +374,8 @@ class CardBody(QWidget):
         self._shine_anim.setEasingCurve(QEasingCurve.Type.Linear)
         self._shine_anim.valueChanged.connect(self._on_shine)
 
-        # chevron animation
-        self._chev_anim = QVariantAnimation(self)
-        self._chev_anim.setDuration(500)
-        self._chev_anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
-        self._chev_anim.valueChanged.connect(self._on_chev)
-
     def _on_shine(self, v: float):
         self._shine_x = v
-        self.update()
-
-    def _on_chev(self, v: float):
-        self._chev_ang = v
         self.update()
 
     def set_hovered(self, hov: bool):
@@ -365,28 +385,17 @@ class CardBody(QWidget):
             self._shine_anim.setStartValue(1.0)
             self._shine_anim.setEndValue(-1.0)
             self._shine_anim.start()
-            if self.tab.get("children"):
-                self._chev_anim.stop()
-                self._chev_anim.setStartValue(self._chev_ang)
-                self._chev_anim.setEndValue(180.0)
-                self._chev_anim.start()
             self._shadow.setBlurRadius(32)
             self._shadow.setOffset(0, 10)
             self._shadow.setColor(QColor(0, 0, 0, 160))
         else:
             self._shine_anim.stop()
             self._shine_x = 1.0
-            if self.tab.get("children"):
-                self._chev_anim.stop()
-                self._chev_anim.setStartValue(self._chev_ang)
-                self._chev_anim.setEndValue(0.0)
-                self._chev_anim.start()
             self._shadow.setBlurRadius(18)
             self._shadow.setOffset(0, 6)
             self._shadow.setColor(QColor(0, 0, 0, 120))
         self._name_lbl.setStyleSheet(
-            f"color: {'#ffffff' if hov else _TEXT};"
-            " background: transparent; border: none; letter-spacing: 0.3px;"
+            f"color: {'#ffffff' if hov else '#f8fafc'}; background: transparent; border: none;"
         )
         self.update()
 
@@ -403,10 +412,16 @@ class CardBody(QWidget):
 
         # gradient: top-left → bottom-right
         grad = QLinearGradient(0, 0, w, h)
-        grad.setColorAt(0.0, QColor(_SURFACE_A))
-        grad.setColorAt(0.5, QColor(_SURFACE_B))
-        grad.setColorAt(1.0, QColor(_SURFACE_C))
+        grad.setColorAt(0.0, QColor("#1a212b"))
+        grad.setColorAt(0.52, QColor("#121924"))
+        grad.setColorAt(1.0, QColor("#0d131b"))
         p.fillPath(clip, QBrush(grad))
+
+        accent_glow = QLinearGradient(0, 0, w, h)
+        accent_glow.setColorAt(0.0, QColor(self._accent_start.red(), self._accent_start.green(), self._accent_start.blue(), 46 if self._is_hov else 26))
+        accent_glow.setColorAt(0.55, QColor(self._accent_end.red(), self._accent_end.green(), self._accent_end.blue(), 14 if self._is_hov else 8))
+        accent_glow.setColorAt(1.0, QColor(10, 15, 21, 0))
+        p.fillPath(clip, QBrush(accent_glow))
 
         # hover brightness overlay
         if self._is_hov:
@@ -422,33 +437,12 @@ class CardBody(QWidget):
         p.fillPath(clip, QBrush(sg))
 
         # card border
-        p.setPen(QPen(QColor(255, 255, 255, 20 if self._is_hov else 10), 1))
+        border_color = QColor(self._accent_end if self._is_hov else QColor(255, 255, 255, 26))
+        if not self._is_hov:
+            border_color = QColor(255, 255, 255, 18)
+        p.setPen(QPen(border_color, 1.2))
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawPath(clip)
-
-        # chevron badge (top-right circular, rotates on hover)
-        if self.tab.get("children"):
-            r  = 18
-            bx = w - r - 8
-            by = r + 8
-
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor(255, 255, 255, 18))
-            p.drawEllipse(QRectF(bx - r, by - r, r * 2, r * 2))
-
-            p.save()
-            p.translate(bx, by)
-            p.rotate(self._chev_ang)
-            p.setPen(QPen(
-                QColor(255, 255, 255, 200), 2,
-                Qt.PenStyle.SolidLine,
-                Qt.PenCapStyle.RoundCap,
-                Qt.PenJoinStyle.RoundJoin,
-            ))
-            size = 6
-            p.drawLine(-size,  size // 2, 0, -(size // 2))
-            p.drawLine(0,     -(size // 2), size, size // 2)
-            p.restore()
 
         super().paintEvent(event)
 
@@ -481,47 +475,12 @@ class ControlPanelCard(QWidget):
         self._body.clicked.connect(self.navigate)
         vbox.addWidget(self._body)
 
-        children = tab.get("children", [])
-        self._children_w = None
-        if children:
-            self._children_w = QWidget()
-            self._children_w.setMaximumHeight(0)
-            self._children_w.setSizePolicy(
-                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum
-            )
-            cl = QVBoxLayout(self._children_w)
-            cl.setContentsMargins(0, 8, 0, 0)
-            cl.setSpacing(6)
-
-            for child in children:
-                item = ChildItemWidget(child)
-                item.navigate.connect(self.navigate)
-                cl.addWidget(item)
-
-            vbox.addWidget(self._children_w)
-            # n items × (38 h + 6 gap) + 8 top − last gap
-            self._target_h = len(children) * 44 + 8 - 6
-
-            self._expand = QPropertyAnimation(self._children_w, b"maximumHeight")
-            self._expand.setDuration(500)
-            self._expand.setEasingCurve(QEasingCurve.Type.OutCubic)
-
     def enterEvent(self, event):
         self._body.set_hovered(True)
-        if self._children_w:
-            self._expand.stop()
-            self._expand.setStartValue(self._children_w.maximumHeight())
-            self._expand.setEndValue(self._target_h)
-            self._expand.start()
         super().enterEvent(event)
 
     def leaveEvent(self, event):
         self._body.set_hovered(False)
-        if self._children_w:
-            self._expand.stop()
-            self._expand.setStartValue(self._children_w.maximumHeight())
-            self._expand.setEndValue(0)
-            self._expand.start()
         super().leaveEvent(event)
 
 
@@ -536,8 +495,14 @@ class ControlPanel(QWidget):
         self._cards: list[ControlPanelCard] = []
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(12, 12, 12, 12)
-        outer.setSpacing(0)
+        outer.setContentsMargins(20, 20, 20, 20)
+        outer.setSpacing(12)
+
+        title = QLabel("Control Panel")
+        title.setStyleSheet(
+            "color: #f8fafc; font-size: 20px; font-weight: 700; padding: 2px 4px;"
+        )
+        outer.addWidget(title)
 
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
@@ -547,8 +512,9 @@ class ControlPanel(QWidget):
             QScrollArea            { background: transparent; border: none; }
             QScrollBar:vertical    { background: transparent; width: 6px; margin: 0; }
             QScrollBar::handle:vertical {
-                background: rgba(255,255,255,45);
+                background: rgba(148,163,184,70);
                 min-height: 24px;
+                border-radius: 3px;
             }
             QScrollBar::add-line:vertical,
             QScrollBar::sub-line:vertical { height: 0; }
@@ -559,8 +525,8 @@ class ControlPanel(QWidget):
         self._content = QWidget()
         self._content.setStyleSheet("background: transparent;")
         self._grid = QGridLayout(self._content)
-        self._grid.setSpacing(20)
-        self._grid.setContentsMargins(6, 6, 6, 6)
+        self._grid.setSpacing(18)
+        self._grid.setContentsMargins(4, 4, 4, 4)
         self._grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
 
         self._scroll.setWidget(self._content)
