@@ -9,6 +9,7 @@ from PySide6.QtCore import QMimeData, QPoint, QSize, Qt, Signal
 from PySide6.QtGui import QIcon, QColor, QDrag, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QDialog,
     QFrame,
@@ -30,6 +31,7 @@ from app.models.camera import Camera
 from app.models.screen import ScreenResponse
 from app.store.home.stream.screen_store import ScreenStore
 from app.ui.confirm_dialog import PrimeConfirmDialog
+from app.ui.dialog import PrimeDialog
 from app.ui.toast import show_toast_message
 
 
@@ -342,24 +344,34 @@ class ScreenSlotCard(QFrame):
         event.ignore()
 
 
-class ScreenEditorDialog(QDialog):
+class ScreenEditorDialog(PrimeDialog):
     def __init__(
         self,
         cameras: List[Camera],
         screen: Optional[ScreenResponse] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
-        super().__init__(parent)
+        super().__init__(
+            title="Edit Screen" if screen is not None else "Create Screen",
+            parent=parent,
+            width=1280,
+            height=820,
+            show_footer=True,
+            ok_text="Update Screen" if screen is not None else "Create Screen",
+            cancel_text="Cancel",
+        )
         self._screen = screen
         self._cameras = list(cameras)
         self._camera_map: Dict[int, Camera] = {camera.id: camera for camera in self._cameras}
         self._slots: List[ScreenSlotCard] = []
         self.payload: Optional[dict] = None
 
-        self.setWindowTitle("Edit Screen" if screen is not None else "Create Screen")
-        self.resize(1280, 820)
+        self.ok_button.clicked.disconnect()
+        self.ok_button.clicked.connect(self._save)
 
-        root = QVBoxLayout(self)
+        self.content_widget = QWidget()
+        self.content_widget.setObjectName("screenEditorContent")
+        root = QVBoxLayout(self.content_widget)
         root.setContentsMargins(16, 16, 16, 16)
         root.setSpacing(12)
 
@@ -379,6 +391,13 @@ class ScreenEditorDialog(QDialog):
         for size in _SCREEN_SIZES:
             self.screen_type_combo.addItem(f"{size}x{size} Grid", size)
         left_layout.addWidget(self.screen_type_combo)
+
+        self.is_main_checkbox = QCheckBox("Set as main screen")
+        is_already_main = screen is not None and bool(screen.is_main)
+        self.is_main_checkbox.setChecked(is_already_main or False)
+        if is_already_main:
+            self.is_main_checkbox.setEnabled(False)
+        left_layout.addWidget(self.is_main_checkbox)
 
         camera_header = QHBoxLayout()
         camera_header.addWidget(QLabel("Available Cameras"))
@@ -423,17 +442,7 @@ class ScreenEditorDialog(QDialog):
         self.grid_scroll.setWidget(self.grid_host)
         right_layout.addWidget(self.grid_scroll, 1)
         body.addWidget(right_panel, 1)
-
-        footer = QHBoxLayout()
-        footer.addStretch()
-        cancel_btn = QPushButton("Cancel")
-        cancel_btn.clicked.connect(self.reject)
-        footer.addWidget(cancel_btn)
-        save_btn = QPushButton("Update Screen" if screen is not None else "Create Screen")
-        save_btn.setObjectName("primaryButton")
-        save_btn.clicked.connect(self._save)
-        footer.addWidget(save_btn)
-        root.addLayout(footer)
+        self.set_content(self.content_widget, fill_height=True)
 
         self._apply_style()
         self.camera_count.setText(str(len(self._cameras)))
@@ -460,10 +469,10 @@ class ScreenEditorDialog(QDialog):
         self._update_assigned_label()
 
     def _apply_style(self) -> None:
-        self.setStyleSheet(
+        self.content_widget.setStyleSheet(
             """
-            QDialog {
-                background: #101214;
+            QWidget#screenEditorContent {
+                background: transparent;
                 color: #f5f7fb;
             }
             QFrame#editorPanel {
@@ -493,6 +502,22 @@ class ScreenEditorDialog(QDialog):
                 border-radius: 10px;
                 color: #f5f7fb;
                 padding: 8px;
+            }
+            QCheckBox {
+                color: #f5f7fb;
+                spacing: 8px;
+                padding: 4px 0 2px 0;
+            }
+            QCheckBox::indicator {
+                width: 16px;
+                height: 16px;
+                border-radius: 4px;
+                border: 1px solid #3b4756;
+                background: #12161a;
+            }
+            QCheckBox::indicator:checked {
+                background: #2563eb;
+                border: 1px solid #3b82f6;
             }
             QListWidget::item {
                 padding: 9px 6px;
@@ -630,6 +655,7 @@ class ScreenEditorDialog(QDialog):
         ]
         payload = {
             "screen_type": self._grid_size(),
+            "is_main": self.is_main_checkbox.isChecked(),
             "cameras": cameras,
         }
         if self._screen is not None:
@@ -678,6 +704,11 @@ class ScreenCard(QFrame):
         occupancy_chip = QLabel(f"{assigned_count}/{total_slots} Occupied")
         occupancy_chip.setObjectName("heroChip")
         hero_top.addWidget(occupancy_chip)
+
+        if screen.is_main:
+            main_chip = QLabel("Main Screen")
+            main_chip.setObjectName("heroMainChip")
+            hero_top.addWidget(main_chip)
 
         hero_top.addStretch()
 
@@ -805,6 +836,15 @@ class ScreenCard(QFrame):
                 padding: 4px 10px;
                 font-size: 11px;
                 font-weight: 700;
+            }
+            QLabel#heroMainChip {
+                background: rgba(34, 197, 94, 0.16);
+                border: 1px solid rgba(74, 222, 128, 0.38);
+                border-radius: 10px;
+                color: #bbf7d0;
+                padding: 4px 10px;
+                font-size: 11px;
+                font-weight: 800;
             }
             QLabel#infoChip {
                 background: rgba(15, 23, 42, 0.72);
@@ -1132,45 +1172,26 @@ class ScreenManagerWidget(QWidget):
         self.refresh_cards()
 
 
-class ScreensManagerDialog(QDialog):
+class ScreensManagerDialog(PrimeDialog):
     def __init__(
         self,
         screen_store: ScreenStore,
         cameras: List[Camera],
         parent: Optional[QWidget] = None,
     ) -> None:
-        super().__init__(parent)
+        super().__init__(
+            title="Camera Screens",
+            parent=parent,
+            width=1280,
+            height=860,
+            show_footer=False,
+        )
+        self.set_header_visible(False)
         self.selected_screen_id: Optional[int] = None
-        self.setWindowTitle("Camera Screens")
-        self.resize(1280, 860)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
 
         self.manager = ScreenManagerWidget(screen_store, cameras, self)
         self.manager.loadRequested.connect(self._accept_screen)
-        layout.addWidget(self.manager, 1)
-
-
-        self.setStyleSheet(
-            """
-            QDialog {
-                background: #0f1114;
-            }
-            QPushButton {
-                background: #253041;
-                border: 1px solid #394656;
-                border-radius: 10px;
-                color: #f5f7fb;
-                font-weight: 700;
-                padding: 10px 14px;
-            }
-            QPushButton:hover {
-                background: #314156;
-            }
-            """
-        )
+        self.set_content(self.manager, fill_height=True)
 
     def _accept_screen(self, screen_id: int) -> None:
         self.selected_screen_id = screen_id

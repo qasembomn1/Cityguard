@@ -5,7 +5,6 @@ import os
 from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QToolButton, QVBoxLayout, QWidget
-
 from app.views.home.user._shared import USER_MANAGEMENT_SIDEBAR_STYLES
 
 

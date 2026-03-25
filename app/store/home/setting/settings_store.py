@@ -135,6 +135,18 @@ class SettingsStore(BaseStore):
             self._remember_error(exc)
             return False
 
+    def enable_dhcp(self, payload: dict[str, Any]) -> bool:
+        self._clear_feedback()
+        try:
+            message = self.service.enable_dhcp(payload)
+            self.network_interfaces = self.service.get_network_interfaces()
+            self.network_ips = self.service.get_network_ips()
+            self._remember_success(message)
+            return True
+        except Exception as exc:
+            self._remember_error(exc)
+            return False
+
     def remove_network_ip(self, payload: dict[str, Any]) -> bool:
         self._clear_feedback()
         try:

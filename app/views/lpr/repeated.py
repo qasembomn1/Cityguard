@@ -3,39 +3,29 @@ from __future__ import annotations
 import os
 import sys
 import urllib.parse
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 from PySide6.QtCore import (
-    QDate,
-    QDateTime,
     QEasingCurve,
     QPropertyAnimation,
-    QSize,
+    QRectF,
     Qt,
-    QTime,
     QUrl,
     Signal,
-    QRectF,
 )
-from PySide6.QtGui import QIcon, QPixmap,QColor,QPainter,QPainterPath
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPixmap
 from app.constants._init_ import Constants
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PySide6.QtWidgets import (
     QApplication,
-    QComboBox,
-    QDateTimeEdit,
-    QDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMainWindow,
-    QPushButton,
     QScrollArea,
     QSizePolicy,
-    QSpinBox,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -52,20 +42,17 @@ from app.store.home.lpr.repeated_store import LprRepeatedStore
 from app.store.home.lpr.search_store import LprSearchStore
 from app.store.home.user.department_store import DepartmentStore as CameraDepartmentStore
 from app.ui.button import PrimeButton
+from app.ui.dialog import PrimeDialog
+from app.ui.input import PrimeInput
 from app.ui.multiselect import PrimeMultiSelect
+from app.ui.select import PrimeSelect
+from app.ui.sidebar_toggle import SidebarToggleButton
 from app.ui.table import PrimeDataTable, PrimeTableColumn
 from app.ui.toast import PrimeToastHost
 from app.utils.digits import normalize_ascii_digits
 from app.utils.env import resolve_http_base_url
-
-
-_ICONS_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "../../resources/icons")
-)
-
-
-def _icon_path(name: str) -> str:
-    return os.path.join(_ICONS_DIR, name)
+from app.views.lpr.search import ClearableDateTimeField, FilterAccordionSection, SEARCH_TIMEZONE
+from app.views.search_shared import SEARCH_SIDEBAR_STYLES, SearchSidebar
 
 
 def _base_http_url() -> str:
@@ -181,78 +168,38 @@ class RemoteImageLabel(QLabel):
         self.setText("")
 
 
-class FilterDateTimeField(QFrame):
-    def __init__(self, placeholder: str, parent: Optional[QWidget] = None) -> None:
-        super().__init__(parent)
-        self.setObjectName("repeatedDateField")
-
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(1, 1, 1, 1)
-        layout.setSpacing(0)
-
-        self.edit = QDateTimeEdit()
-        self.edit.setCalendarPopup(True)
-        self.edit.setDisplayFormat("yyyy-MM-dd hh:mm AP")
-        self.edit.setSpecialValueText(placeholder)
-        self.edit.setDateTime(QDateTime.currentDateTime())
-        self.edit.setMinimumDateTime(QDateTime.fromSecsSinceEpoch(0))
-        self.edit.setObjectName("repeatedDateEdit")
-        self.edit.dateTimeChanged.connect(self._mark_has_value)
-        layout.addWidget(self.edit, 1)
-
-        clear_btn = QToolButton()
-        clear_btn.setObjectName("repeatedDateClear")
-        clear_btn.setIcon(QIcon(_icon_path("close.svg")))
-        clear_btn.setIconSize(QSize(14, 14))
-        clear_btn.setToolTip("Clear")
-        clear_btn.clicked.connect(self.clear)
-        layout.addWidget(clear_btn)
-
-        self._has_value = False
-        self.clear()
-
-    def value(self) -> Optional[datetime]:
-        if not self._has_value:
-            return None
-        return self.edit.dateTime().toPython()
-
-    def set_value(self, value: Optional[datetime]) -> None:
-        if value is None:
-            self.clear()
-            return
-        self.edit.blockSignals(True)
-        self._has_value = True
-        self.edit.setDateTime(
-            QDateTime(
-                QDate(value.year, value.month, value.day),
-                QTime(value.hour, value.minute, value.second),
-            )
-        )
-        self.edit.blockSignals(False)
-        self.edit.setStyleSheet("")
-
-    def clear(self) -> None:
-        self.edit.blockSignals(True)
-        self._has_value = False
-        self.edit.setDateTime(QDateTime.currentDateTime())
-        self.edit.blockSignals(False)
-        self.edit.setStyleSheet("color: #93a1b6;")
-
-    def _mark_has_value(self) -> None:
-        self._has_value = True
-        self.edit.setStyleSheet("")
-
-
-class RepeatedDetailDialog(QDialog):
+class RepeatedDetailDialog(PrimeDialog):
     def __init__(self, net: QNetworkAccessManager, parent: Optional[QWidget] = None) -> None:
-        super().__init__(parent)
+        super().__init__(
+            title="Repeated Details",
+            parent=parent,
+            width=1120,
+            height=680,
+            ok_text="Details",
+            cancel_text="Close",
+            draggable=False,
+        )
         self._net = net
         self._records: List[LprSearchResult] = []
         self._index = 0
-        self.setWindowTitle("Repeated Details")
-        self.resize(1120, 680)
 
-        root = QVBoxLayout(self)
+        self.ok_button.hide()
+        footer = self.footer_widget.layout()
+
+        self.position_label = QLabel("Record 0 of 0")
+        self.position_label.setObjectName("repeatedDetailMeta")
+        footer.insertWidget(0, self.position_label)
+
+        self.prev_btn = PrimeButton("Prev", variant="secondary", mode="outline", size="sm", width=90)
+        self.prev_btn.clicked.connect(self._show_prev)
+        footer.insertWidget(1, self.prev_btn)
+
+        self.next_btn = PrimeButton("Next", variant="secondary", mode="outline", size="sm", width=90)
+        self.next_btn.clicked.connect(self._show_next)
+        footer.insertWidget(2, self.next_btn)
+
+        content = QWidget()
+        root = QVBoxLayout(content)
         root.setContentsMargins(18, 18, 18, 18)
         root.setSpacing(14)
 
@@ -335,37 +282,12 @@ class RepeatedDetailDialog(QDialog):
             field.setWordWrap(True)
             info_layout.addWidget(field)
         info_layout.addWidget(self.empty_label)
-
         info_layout.addStretch(1)
 
-        footer = QHBoxLayout()
-        footer.setSpacing(8)
-        root.addLayout(footer)
-
-        self.position_label = QLabel("Record 0 of 0")
-        self.position_label.setObjectName("repeatedDetailMeta")
-        footer.addWidget(self.position_label)
-
-        footer.addStretch(1)
-
-        self.prev_btn = QPushButton("Prev")
-        self.prev_btn.clicked.connect(self._show_prev)
-        footer.addWidget(self.prev_btn)
-
-        self.next_btn = QPushButton("Next")
-        self.next_btn.clicked.connect(self._show_next)
-        footer.addWidget(self.next_btn)
-
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(self.accept)
-        footer.addWidget(close_btn)
-
+        self.set_content(content, fill_height=True)
         self.setStyleSheet(
-            """
-            QDialog {
-                background: #171b21;
-                color: #eef2f8;
-            }
+            self.styleSheet()
+            + """
             QLabel#repeatedDetailSummary {
                 color: #f8fafc;
                 font-size: 16px;
@@ -399,24 +321,6 @@ class RepeatedDetailDialog(QDialog):
                 color: #f59e0b;
                 font-size: 13px;
             }
-            QPushButton {
-                background: #2b3340;
-                border: 1px solid #425062;
-                border-radius: 8px;
-                color: #f8fafc;
-                padding: 7px 14px;
-                font-weight: 600;
-                min-height: 18px;
-            }
-            QPushButton:hover {
-                background: #35507f;
-                border-color: #4d76bb;
-            }
-            QPushButton:disabled {
-                background: #20242b;
-                color: #7f8a99;
-                border-color: #313844;
-            }
             """
         )
 
@@ -443,6 +347,7 @@ class RepeatedDetailDialog(QDialog):
         has_records = total > 0
         self.prev_btn.setEnabled(has_records and self._index > 0)
         self.next_btn.setEnabled(has_records and self._index + 1 < total)
+        self.set_title(f"Repeated Details ({self._index + 1 if has_records else 0} / {total})")
         self.position_label.setText(f"Record {self._index + 1 if has_records else 0} of {total}")
         self.empty_label.setVisible(not has_records)
 
@@ -482,8 +387,11 @@ class LprRepeatedPage(QWidget):
         self.search_store = LprSearchStore(LprSearchService())
 
         self._loaded_department_id: Optional[int] = None
+        self.filter_panel_open = False
         self.filters_window_visible = False
         self._filters_slide_animation: Optional[QPropertyAnimation] = None
+        self._filter_sections: list[FilterAccordionSection] = []
+        self.rows_per_page = 50
         self.has_searched = False
 
         self.auth_store.changed.connect(self.refresh)
@@ -496,6 +404,7 @@ class LprRepeatedPage(QWidget):
 
         self._build_ui()
         self._apply_style()
+        self._apply_default_date_range()
 
         self.auth_store.load()
         self.camera_store.get_camera_for_user(None, silent=True)
@@ -506,6 +415,10 @@ class LprRepeatedPage(QWidget):
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(12)
         self._root_layout = root
+
+        self.sidebar = SearchSidebar("/search/lpr/repeated", self)
+        self.sidebar.navigate.connect(self.navigate.emit)
+        root.addWidget(self.sidebar, 0)
 
         self.filters_panel = QFrame()
         self.filters_panel.setObjectName("filtersPanel")
@@ -519,26 +432,30 @@ class LprRepeatedPage(QWidget):
         root.addWidget(self.filters_panel, 0)
 
         self.content_panel = QFrame()
-        self.content_panel.setObjectName("repeatedContentPanel")
+        self.content_panel.setObjectName("resultsPanel")
+        self.content_panel.setMinimumWidth(0)
+        self.content_panel.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
         root.addWidget(self.content_panel, 1)
-        root.setStretch(0, 1)
-        root.setStretch(1, 4)
+        root.setStretch(0, 0)
+        root.setStretch(1, 1)
+        root.setStretch(2, 4)
 
         content = QVBoxLayout(self.content_panel)
-        content.setContentsMargins(18, 18, 18, 18)
-        content.setSpacing(12)
+        content.setContentsMargins(18, 16, 18, 18)
+        content.setSpacing(14)
 
         self.hero_scroll = QScrollArea()
-        self.hero_scroll.setObjectName("repeatedFiltersScroll")
+        self.hero_scroll.setObjectName("filtersScroll")
         self.hero_scroll.setWidgetResizable(True)
         self.hero_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.hero_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.hero_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.hero_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.hero_scroll.viewport().setAutoFillBackground(False)
         filters_layout.addWidget(self.hero_scroll, 1)
 
         hero_frame = QFrame()
-        hero_frame.setObjectName("repeatedHero")
+        hero_frame.setObjectName("searchHero")
         hero_frame.setMinimumWidth(0)
         self.hero_frame = hero_frame
         hero = QVBoxLayout(hero_frame)
@@ -556,148 +473,216 @@ class LprRepeatedPage(QWidget):
         hero_text.setSpacing(4)
         hero_head.addLayout(hero_text)
 
-        hero_title = QLabel("LPR Repeated Window")
+        hero_title = QLabel("Repeated Search")
         hero_title.setObjectName("heroTitle")
         hero_title.setWordWrap(True)
         hero_text.addWidget(hero_title)
 
-        hero_hint = QLabel("Search repeated license plates by time range, threshold, and selected cameras. Use the filter panel only when you need it.")
-        hero_hint.setObjectName("heroHint")
-        hero_hint.setWordWrap(True)
-        hero_text.addWidget(hero_hint)
+        time_band = FilterAccordionSection(
+            "Time Range",
+            "",
+            expanded=True,
+            collapsible=False,
+        )
+        self._filter_sections.append(time_band)
+        hero.addWidget(time_band)
+        time_layout = QGridLayout()
+        time_layout.setContentsMargins(0, 0, 0, 0)
+        time_layout.setHorizontalSpacing(12)
+        time_layout.setVerticalSpacing(10)
+        time_layout.setColumnStretch(0, 1)
+        time_layout.setRowStretch(2, 1)
+        time_band.body_layout.addLayout(time_layout)
+        time_band.body_layout.addStretch(1)
 
-        self.filter_state_chip = QLabel("Quick search")
-        self.filter_state_chip.setObjectName("heroChip")
-        hero_head.addWidget(self.filter_state_chip, 0, Qt.AlignmentFlag.AlignLeft)
-
-        fields_grid = QGridLayout()
-        fields_grid.setContentsMargins(0, 0, 0, 0)
-        fields_grid.setHorizontalSpacing(12)
-        fields_grid.setVerticalSpacing(12)
-        fields_grid.setColumnStretch(0, 1)
-        hero.addLayout(fields_grid)
-
-        self.date_from_field = FilterDateTimeField("Start Time")
-        fields_grid.addWidget(
+        self.date_from_field = ClearableDateTimeField("Start Time")
+        self._allow_horizontal_shrink(self.date_from_field)
+        time_layout.addWidget(
             self._hero_field_block(
                 "Start Date & Time",
                 self.date_from_field,
-                "Search from this timestamp.",
+                "",
             ),
             0,
             0,
         )
 
-        self.date_to_field = FilterDateTimeField("End Time")
-        fields_grid.addWidget(
+        self.date_to_field = ClearableDateTimeField("End Time")
+        self._allow_horizontal_shrink(self.date_to_field)
+        time_layout.addWidget(
             self._hero_field_block(
                 "End Date & Time",
                 self.date_to_field,
-                "Search until this timestamp.",
+                "",
             ),
             1,
             0,
         )
 
-        self.repeated_spin = QSpinBox()
-        self.repeated_spin.setRange(1, 9999)
-        self.repeated_spin.setValue(2)
-        fields_grid.addWidget(
+        repeated_band = FilterAccordionSection(
+            "Repeated Filters",
+            "",
+            expanded=True,
+            collapsible=False,
+        )
+        self._filter_sections.append(repeated_band)
+        hero.addWidget(repeated_band)
+        repeated_layout = QGridLayout()
+        repeated_layout.setContentsMargins(0, 0, 0, 0)
+        repeated_layout.setHorizontalSpacing(12)
+        repeated_layout.setVerticalSpacing(10)
+        repeated_layout.setColumnStretch(0, 1)
+        repeated_layout.setRowStretch(2, 1)
+        repeated_band.body_layout.addLayout(repeated_layout)
+        repeated_band.body_layout.addStretch(1)
+
+        self.repeated_input = PrimeInput(
+            type="number",
+            minimum=1,
+            maximum=9999,
+            decimals=0,
+            value=2,
+            placeholder_text="Repeated number",
+        )
+        self._allow_horizontal_shrink(self.repeated_input)
+        repeated_layout.addWidget(
             self._hero_field_block(
                 "Repeated Number",
-                self.repeated_spin,
-                "Minimum repeated hits required for a plate.",
+                self.repeated_input,
+                "",
             ),
-            2,
+            0,
             0,
         )
 
         self.camera_select = PrimeMultiSelect(options=[], placeholder="Select Camera")
-        self.camera_select.setMinimumWidth(0)
-        self.camera_select.setMaximumWidth(16777215)
-        self.camera_select.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        fields_grid.addWidget(
+        self._allow_horizontal_shrink(self.camera_select)
+        repeated_layout.addWidget(
             self._hero_field_block(
                 "Camera",
                 self.camera_select,
-                "Limit repeated search to selected cameras.",
+                "",
             ),
-            3,
+            1,
             0,
         )
+
+        for section in self._filter_sections:
+            section.toggled.connect(self._sync_filter_toggle_ui)
 
         hero_actions = QVBoxLayout()
         hero_actions.setContentsMargins(0, 0, 0, 0)
         hero_actions.setSpacing(8)
         hero.addLayout(hero_actions)
 
-        self.reset_btn = QPushButton("Reset Filters")
-        self.reset_btn.setObjectName("secondarySidebarButton")
+        self.reset_btn = PrimeButton("Reset Filters", variant="secondary", mode="outline", size="sm")
         self.reset_btn.clicked.connect(self.reset_filters)
+        self._allow_horizontal_shrink(self.reset_btn)
         hero_actions.addWidget(self.reset_btn)
 
-        self.search_btn = QPushButton("Search Records")
-        self.search_btn.setObjectName("primarySidebarButton")
+        self.filter_toggle_btn = PrimeButton("Hide Filters", variant="secondary", mode="outline", size="sm")
+        self.filter_toggle_btn.clicked.connect(self.toggle_filter_panel)
+        self.filter_toggle_btn.hide()
+        self._allow_horizontal_shrink(self.filter_toggle_btn)
+        hero_actions.addWidget(self.filter_toggle_btn)
+
+        self.search_btn = PrimeButton("Search Records", variant="primary", mode="filled", size="sm")
         self.search_btn.clicked.connect(self.perform_search)
+        self._allow_horizontal_shrink(self.search_btn)
         hero_actions.addWidget(self.search_btn)
+        self._sync_filter_toggle_ui()
+        self._sync_filters_window_ui()
 
         toolbar_frame = QFrame()
-        toolbar_frame.setObjectName("repeatedToolbar")
-        toolbar = QHBoxLayout(toolbar_frame)
+        toolbar_frame.setObjectName("resultsToolbar")
+        toolbar_frame.setMinimumWidth(0)
+        toolbar_frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        toolbar = QVBoxLayout(toolbar_frame)
         toolbar.setContentsMargins(14, 14, 14, 14)
         toolbar.setSpacing(10)
         content.addWidget(toolbar_frame)
+
+        toolbar_head = QHBoxLayout()
+        toolbar_head.setContentsMargins(0, 0, 0, 0)
+        toolbar_head.setSpacing(10)
+        toolbar.addLayout(toolbar_head)
+
+        self.results_filter_btn = SidebarToggleButton(self.filters_window_visible, self)
+        self.results_filter_btn.clicked.connect(self.toggle_filters_window)
+        toolbar_head.addWidget(self.results_filter_btn, 0, Qt.AlignmentFlag.AlignVCenter)
 
         left_cluster = QVBoxLayout()
         left_cluster.setContentsMargins(0, 0, 0, 0)
         left_cluster.setSpacing(3)
         self.page_title = QLabel("LPR Repeated Results")
         self.page_title.setObjectName("pageTitle")
+        self.page_title.setWordWrap(True)
+        self.page_title.setMinimumWidth(0)
+        self.page_title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.status_label = QLabel("Adjust filters and run a repeated search.")
         self.status_label.setObjectName("pageSummary")
+        self.status_label.setWordWrap(True)
+        self.status_label.setMinimumWidth(0)
+        self.status_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         left_cluster.addWidget(self.page_title)
         left_cluster.addWidget(self.status_label)
-        toolbar.addLayout(left_cluster, 1)
+        toolbar_head.addLayout(left_cluster, 1)
 
-        self.results_filter_btn = QPushButton(
-            "Hide Sidebar" if self.filters_window_visible else "Show Sidebar"
+        self.rows_combo = PrimeSelect(
+            options=[{"label": f"{size} Rows", "value": size} for size in (10, 20, 50, 100, 200)],
+            placeholder="50 Rows",
         )
-        self.results_filter_btn.setObjectName("filterToggleButton")
-        self.results_filter_btn.clicked.connect(self.toggle_filters_window)
-        toolbar.addWidget(self.results_filter_btn)
+        self.rows_combo.set_value(self.rows_per_page)
+        self.rows_combo.value_changed.connect(self._on_rows_changed)
+        self._allow_horizontal_shrink(self.rows_combo)
+        toolbar_head.addWidget(self.rows_combo)
 
-        self.goto_page_edit = QLineEdit()
-        self.goto_page_edit.setPlaceholderText("Goto Page...")
+        toolbar_nav = QHBoxLayout()
+        toolbar_nav.setContentsMargins(0, 0, 0, 0)
+        toolbar_nav.setSpacing(10)
+        toolbar.addLayout(toolbar_nav)
+        toolbar_nav.addStretch(1)
+
+        self.goto_page_edit = PrimeInput(
+            type="number",
+            minimum=1,
+            maximum=999999,
+            decimals=0,
+            placeholder_text="Goto Page...",
+        )
+        self.goto_page_edit.clear()
         self.goto_page_edit.setFixedWidth(120)
         self.goto_page_edit.textEdited.connect(self._normalize_page_digits)
-        toolbar.addWidget(self.goto_page_edit)
+        self._allow_horizontal_shrink(self.goto_page_edit)
+        toolbar_nav.addWidget(self.goto_page_edit)
 
-        self.goto_btn = PrimeButton("Goto", variant="primary", size="sm")
+        self.goto_btn = PrimeButton("Goto", variant="primary", size="sm", width=72)
         self.goto_btn.clicked.connect(self.goto_page)
-        toolbar.addWidget(self.goto_btn)
+        self._allow_horizontal_shrink(self.goto_btn)
+        toolbar_nav.addWidget(self.goto_btn)
 
-        self.prev_btn = PrimeButton("Prev", variant="secondary", size="sm")
+        self.prev_btn = PrimeButton("Prev", variant="secondary", mode="outline", size="sm", width=82)
         self.prev_btn.clicked.connect(self.goto_prev_page)
-        toolbar.addWidget(self.prev_btn)
+        self._allow_horizontal_shrink(self.prev_btn)
+        toolbar_nav.addWidget(self.prev_btn)
 
-        self.next_btn = PrimeButton("Next", variant="secondary", size="sm")
+        self.next_btn = PrimeButton("Next", variant="secondary", mode="outline", size="sm", width=82)
         self.next_btn.clicked.connect(self.goto_next_page)
-        toolbar.addWidget(self.next_btn)
+        self._allow_horizontal_shrink(self.next_btn)
+        toolbar_nav.addWidget(self.next_btn)
 
         self.page_meta = QLabel("0-0 of 0")
         self.page_meta.setObjectName("repeatedMeta")
-        toolbar.addWidget(self.page_meta)
+        toolbar_nav.addWidget(self.page_meta)
 
-        toolbar.addStretch(1)
-
-        self.rows_combo = QComboBox()
-        for size in (10, 20, 50, 100, 200):
-            self.rows_combo.addItem(f"{size} Rows", size)
-        self.rows_combo.setCurrentIndex(2)
-        self.rows_combo.currentIndexChanged.connect(self._on_rows_changed)
-        toolbar.addWidget(self.rows_combo)
-
-        self.table = PrimeDataTable(page_size=50, page_size_options=[10, 20, 50, 100, 200], row_height=48, show_footer=False)
+        self.table = PrimeDataTable(
+            page_size=self.rows_per_page,
+            page_size_options=[10, 20, 50, 100, 200],
+            row_height=48,
+            show_footer=False,
+        )
+        self.table.setMinimumWidth(0)
+        self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.table.set_columns(
             [
                 PrimeTableColumn("number", "Plate Number", stretch=True),
@@ -711,35 +696,9 @@ class LprRepeatedPage(QWidget):
         self.table.page_changed.connect(self._sync_page_state)
         content.addWidget(self.table, 1)
 
-        self._sync_filters_window_ui()
         self._update_filters_scroll_height()
 
-    def _time_range_widget(self) -> QWidget:
-        wrapper = QWidget()
-        layout = QHBoxLayout(wrapper)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
-
-        self.date_from_field = FilterDateTimeField("Start Time")
-        layout.addWidget(self.date_from_field, 1)
-
-        self.date_to_field = FilterDateTimeField("End Time")
-        layout.addWidget(self.date_to_field, 1)
-        return wrapper
-
-    def _field_block(self, label_text: str, field: QWidget) -> QWidget:
-        wrapper = QWidget()
-        layout = QVBoxLayout(wrapper)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
-
-        label = QLabel(label_text)
-        label.setObjectName("repeatedFieldLabel")
-        layout.addWidget(label)
-        layout.addWidget(field)
-        return wrapper
-
-    def _hero_field_block(self, label_text: str, field: QWidget, hint_text: str) -> QWidget:
+    def _hero_field_block(self, label_text: str, field: QWidget, hint_text: str = "") -> QWidget:
         wrapper = QWidget()
         wrapper.setObjectName("heroFieldBlock")
         layout = QVBoxLayout(wrapper)
@@ -749,144 +708,273 @@ class LprRepeatedPage(QWidget):
         label = QLabel(label_text)
         label.setObjectName("heroFieldLabel")
         layout.addWidget(label)
-        layout.addWidget(field)
 
-        hint = QLabel(hint_text)
-        hint.setObjectName("heroFieldHint")
-        hint.setWordWrap(True)
-        layout.addWidget(hint)
+        if hint_text:
+            hint = QLabel(hint_text)
+            hint.setObjectName("heroFieldHint")
+            hint.setWordWrap(True)
+            layout.addWidget(hint)
+        layout.addWidget(field)
         return wrapper
+
+    def _allow_horizontal_shrink(self, widget: QWidget) -> None:
+        widget.setMinimumWidth(0)
+        policy = widget.sizePolicy()
+        if policy.horizontalPolicy() == QSizePolicy.Policy.Fixed:
+            policy.setHorizontalPolicy(QSizePolicy.Policy.Preferred)
+        else:
+            policy.setHorizontalPolicy(QSizePolicy.Policy.Expanding)
+        widget.setSizePolicy(policy)
+
+    def _apply_default_date_range(self) -> None:
+        now = datetime.now(SEARCH_TIMEZONE).replace(second=0, microsecond=0)
+        self.date_to_field.set_value(now)
+        self.date_from_field.set_value(now - timedelta(hours=24))
 
     def _apply_style(self) -> None:
         self.setStyleSheet(
-            """
+            SEARCH_SIDEBAR_STYLES
+            + """
             QWidget {
-                color: #eef2f8;
+                color: #e2e8f0;
+                font-size: 13px;
             }
             QFrame#filtersPanel {
                 background: transparent;
                 border: none;
             }
-            QFrame#repeatedContentPanel {
-                background: #171b21;
-                border: 1px solid #2b3340;
-                border-radius: 16px;
-            }
-            QFrame#repeatedHero {
+            QFrame#resultsPanel {
                 background: #171b22;
                 border: 1px solid #2b3240;
-                border-radius: 16px;
+                border-radius: 18px;
             }
-            QFrame#repeatedToolbar {
+            QFrame#resultsToolbar {
                 background: #1f2630;
                 border: 1px solid #2e3746;
-                border-radius: 14px;
+                border-radius: 16px;
+            }
+            QFrame#searchHero {
+                background: #171b22;
+                border: 1px solid #2b3240;
+                border-radius: 22px;
+            }
+            QFrame#filterAccordion {
+                background: #1f2630;
+                border: 1px solid #2e3746;
+                border-radius: 18px;
+            }
+            QPushButton#filterAccordionHeader {
+                background: transparent;
+                border: none;
+                color: #e2e8f0;
+                font-size: 14px;
+                font-weight: 800;
+                padding: 14px 16px;
+                text-align: left;
+            }
+            QPushButton#filterAccordionHeader:hover {
+                background: rgba(148, 163, 184, 0.08);
+            }
+            QPushButton#filterAccordionHeader:disabled {
+                color: #64748b;
+            }
+            QFrame#filterAccordionBody {
+                background: transparent;
+                border-top: 1px solid rgba(71, 85, 105, 0.55);
+            }
+            QLabel#filterAccordionHint {
+                color: #94a3b8;
+                font-size: 11px;
             }
             QLabel#heroTitle {
                 color: #f8fafc;
-                font-size: 22px;
-                font-weight: 700;
+                font-size: 28px;
+                font-weight: 900;
             }
             QLabel#heroHint {
-                color: #93a1b6;
+                color: #94a3b8;
                 font-size: 13px;
             }
             QLabel#heroChip {
-                padding: 6px 12px;
-                border-radius: 999px;
                 background: rgba(148, 163, 184, 0.14);
                 border: 1px solid rgba(148, 163, 184, 0.32);
                 color: #e2e8f0;
                 font-size: 11px;
-                font-weight: 700;
+                font-weight: 800;
+                padding: 6px 10px;
             }
             QLabel#pageTitle {
                 color: #f8fafc;
-                font-size: 20px;
-                font-weight: 700;
+                font-size: 22px;
+                font-weight: 800;
             }
-            QLabel#pageSummary,
-            QLabel#repeatedFieldLabel {
-                color: #93a1b6;
-                font-size: 13px;
+            QLabel#pageSummary {
+                color: #94a3b8;
+                font-size: 12px;
             }
             QLabel#heroFieldLabel {
                 color: #cbd5e1;
                 font-size: 12px;
-                font-weight: 700;
+                font-weight: 800;
             }
             QLabel#heroFieldHint {
-                color: #93a1b6;
+                color: #94a3b8;
                 font-size: 11px;
             }
             QLabel#repeatedMeta {
-                color: #93a1b6;
+                color: #94a3b8;
                 font-size: 12px;
             }
-            QFrame#repeatedDateField {
+            QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QDateTimeEdit, QTimeEdit {
                 background: #232a34;
                 border: 1px solid #364152;
                 border-radius: 10px;
-            }
-            QDateTimeEdit#repeatedDateEdit,
-            QSpinBox,
-            QLineEdit,
-            QComboBox {
-                background: #232a34;
-                border: 1px solid #364152;
-                border-radius: 10px;
-                color: #eef2f8;
-                padding: 8px 10px;
-                min-height: 24px;
-            }
-            QToolButton#repeatedDateClear {
-                background: transparent;
-                border: none;
-                padding: 0 8px;
+                color: #f8fafc;
+                min-height: 38px;
+                padding: 0 12px;
             }
             QWidget#heroFieldBlock {
-                background: #1f2630;
-                border: 1px solid #2e3746;
-                border-radius: 14px;
-                padding: 2px;
+                background: transparent;
             }
-            QPushButton#primarySidebarButton {
-                background: #2563eb;
-                color: #ffffff;
-                border: 1px solid #2563eb;
+            QFrame#dateField {
+                background: #232a34;
+                border: 1px solid #364152;
+                border-radius: 12px;
+            }
+            QLineEdit#datePickerDisplay {
+                background: transparent;
+                border: none;
+                color: #f8fafc;
+                min-height: 46px;
+                padding: 0 12px;
+                selection-background-color: #3b82f6;
+            }
+            QToolButton#datePickerButton, QToolButton#dateClearButton {
+                background: transparent;
+                border: none;
+                min-width: 38px;
+                max-width: 38px;
+                min-height: 46px;
+                max-height: 46px;
+                padding: 0;
+            }
+            QToolButton#datePickerButton:hover, QToolButton#dateClearButton:hover {
+                background: rgba(96, 165, 250, 0.14);
+            }
+            QFrame#searchHero QLineEdit,
+            QFrame#searchHero QComboBox,
+            QFrame#searchHero QSpinBox,
+            QFrame#searchHero QDoubleSpinBox,
+            QFrame#searchHero QDateTimeEdit,
+            QFrame#searchHero QTimeEdit {
+                background: #232a34;
+                border: 1px solid #364152;
+                border-radius: 12px;
+                color: #f8fafc;
+                min-height: 44px;
+                padding: 0 12px;
+            }
+            QFrame#searchHero QLineEdit:focus,
+            QFrame#searchHero QComboBox:focus,
+            QFrame#searchHero QSpinBox:focus,
+            QFrame#searchHero QDoubleSpinBox:focus,
+            QFrame#searchHero QDateTimeEdit:focus,
+            QFrame#searchHero QTimeEdit:focus {
+                border: 1px solid #64748b;
+            }
+            QDialog#datePickerPopup {
+                background: #0f1726;
+                border: 1px solid #35588c;
+                border-radius: 16px;
+            }
+            QLabel#datePopupTitle {
+                color: #f8fbff;
+                font-size: 14px;
+                font-weight: 800;
+            }
+            QLabel#datePopupHint {
+                color: #a9bfdc;
+                font-size: 11px;
+            }
+            QCalendarWidget {
+                background: transparent;
+                color: #e5e7eb;
+            }
+            QCalendarWidget QWidget#qt_calendar_navigationbar {
+                background: transparent;
+            }
+            QCalendarWidget QToolButton {
+                color: #e5e7eb;
+                min-width: 28px;
+                min-height: 28px;
+                border-radius: 8px;
+            }
+            QCalendarWidget QToolButton:hover {
+                background: rgba(59, 130, 246, 0.15);
+            }
+            QCalendarWidget QMenu {
+                background: #0f1726;
+                color: #e5e7eb;
+                border: 1px solid #35588c;
+                border-radius: 8px;
+            }
+            QCalendarWidget QSpinBox {
+                background: #111827;
+                border: 1px solid #334155;
+                border-radius: 8px;
+                color: #f8fafc;
+                min-height: 28px;
+                padding: 0 8px;
+            }
+            QCalendarWidget QAbstractItemView:enabled {
+                background: #0b1220;
+                color: #e5e7eb;
+                selection-background-color: #3b82f6;
+                selection-color: white;
+                outline: 0;
+            }
+            QTimeEdit#datePopupTimeEdit {
+                background: #111827;
+                border: 1px solid #334155;
                 border-radius: 10px;
-                padding: 8px 14px;
+                color: #f8fafc;
+                min-height: 36px;
+                padding: 0 10px;
+            }
+            QPushButton#datePopupSecondaryButton, QPushButton#datePopupPrimaryButton {
+                min-height: 34px;
+                border-radius: 10px;
+                padding: 0 14px;
                 font-weight: 700;
-                min-height: 18px;
             }
-            QPushButton#primarySidebarButton:hover {
+            QPushButton#datePopupSecondaryButton {
+                background: #1f2937;
+                border: 1px solid #374151;
+                color: #e5e7eb;
+            }
+            QPushButton#datePopupSecondaryButton:hover {
+                background: #273446;
+            }
+            QPushButton#datePopupPrimaryButton {
+                background: #2563eb;
+                border: none;
+                color: white;
+            }
+            QPushButton#datePopupPrimaryButton:hover {
                 background: #1d4ed8;
-                border-color: #1d4ed8;
             }
-            QPushButton#secondarySidebarButton,
-            QPushButton#filterToggleButton {
-                background: #2b3340;
-                color: #eef2f8;
-                border: 1px solid #425062;
-                border-radius: 10px;
-                padding: 8px 14px;
-                font-weight: 600;
-                min-height: 18px;
-            }
-            QPushButton#secondarySidebarButton:hover,
-            QPushButton#filterToggleButton:hover {
-                background: #35507f;
-                border-color: #4d76bb;
+            QScrollArea, QScrollArea > QWidget > QWidget {
+                background: transparent;
             }
             """
         )
 
     def _camera_options(self) -> List[dict]:
-        options: List[dict] = []
-        for camera in self.camera_store.cameras:
-            label = camera.name or f"Camera #{camera.id}"
-            options.append({"label": label, "value": camera.id})
-        return options
+        return [
+            {"label": camera.name or f"Camera #{camera.id}", "value": camera.id}
+            for camera in sorted(self.camera_store.cameras, key=lambda item: (item.name or "").lower())
+            if int(getattr(camera, "id", 0) or 0) > 0
+        ]
 
     def _rows(self) -> List[Dict[str, object]]:
         rows: List[Dict[str, object]] = []
@@ -905,12 +993,19 @@ class LprRepeatedPage(QWidget):
 
     def refresh(self) -> None:
         current_user = self.auth_store.current_user
-        department_id = current_user.department_id if current_user is not None else None
+        department_id = None
+        if current_user is not None and not getattr(current_user, "is_superadmin", False):
+            department_id = current_user.department_id
         if department_id != self._loaded_department_id:
             self._loaded_department_id = department_id
             self.camera_store.get_camera_for_user(department_id, silent=True)
 
-        self.camera_select.set_options(self._camera_options())
+        previous_camera_ids = set(self.camera_select.value())
+        camera_options = self._camera_options()
+        self.camera_select.set_options(camera_options)
+        self.camera_select.set_value(
+            [item for item in previous_camera_ids if item in {opt["value"] for opt in camera_options}]
+        )
         self.table.set_rows(self._rows())
         self.search_btn.setEnabled(not self.repeated_store.loading)
         self.reset_btn.setEnabled(not self.repeated_store.loading)
@@ -934,10 +1029,10 @@ class LprRepeatedPage(QWidget):
         self.goto_page_edit.blockSignals(False)
         self.goto_page_edit.setCursorPosition(min(cursor, len(normalized)))
 
-    def _on_rows_changed(self, _index: int) -> None:
-        size = self.rows_combo.currentData()
-        if isinstance(size, int):
-            self.table.set_page_size(size)
+    def _on_rows_changed(self, value) -> None:
+        if isinstance(value, int):
+            self.rows_per_page = value
+            self.table.set_page_size(value)
 
     def _sync_page_state(self, current_page: int, total_pages: int, total_rows: int) -> None:
         if self.goto_page_edit.text().strip() != str(current_page if total_pages else ""):
@@ -952,17 +1047,36 @@ class LprRepeatedPage(QWidget):
         self.prev_btn.setEnabled(current_page > 1)
         self.next_btn.setEnabled(total_pages > 0 and current_page < total_pages)
 
+    def _sync_filter_toggle_ui(self, *_args) -> None:
+        if self._filter_sections and all(not section.is_collapsible() for section in self._filter_sections):
+            self.filter_panel_open = True
+            if hasattr(self, "filter_toggle_btn"):
+                self.filter_toggle_btn.setText("Hide Filters")
+            return
+        open_count = sum(1 for section in self._filter_sections if section.is_expanded())
+        self.filter_panel_open = open_count > 0
+        if open_count <= 0:
+            if hasattr(self, "filter_toggle_btn"):
+                self.filter_toggle_btn.setText("Show Filters")
+        elif open_count >= len(self._filter_sections):
+            if hasattr(self, "filter_toggle_btn"):
+                self.filter_toggle_btn.setText("Hide Filters")
+        else:
+            if hasattr(self, "filter_toggle_btn"):
+                self.filter_toggle_btn.setText("Hide Filters")
+
     def _sync_filters_window_ui(self) -> None:
         if hasattr(self, "filters_panel"):
             self._sync_filters_panel_width(animate=False)
         else:
             self.hero_scroll.setVisible(self.filters_window_visible)
         self._update_filters_scroll_height()
-        button_text = "Hide Sidebar" if self.filters_window_visible else "Show Sidebar"
-        self.results_filter_btn.setText(button_text)
-        self.filter_state_chip.setText("All filters visible")
+        if hasattr(self, "results_filter_btn"):
+            self.results_filter_btn.sync_visibility(self.filters_window_visible)
 
     def _update_filters_scroll_height(self) -> None:
+        if not hasattr(self, "hero_scroll"):
+            return
         self.hero_scroll.setMaximumHeight(16777215)
 
     def _target_filters_panel_width(self) -> int:
@@ -996,6 +1110,9 @@ class LprRepeatedPage(QWidget):
         current = max(0, int(self.filters_panel.maximumWidth()))
         if target > 0:
             self.filters_panel.setVisible(True)
+            if current == 0:
+                self._set_filters_panel_width(1)
+                current = 1
         if current == target:
             if target == 0:
                 self.filters_panel.setVisible(False)
@@ -1025,7 +1142,17 @@ class LprRepeatedPage(QWidget):
         self.filters_window_visible = visible
         self._sync_filters_panel_width(animate=True)
         self._update_filters_scroll_height()
-        self.results_filter_btn.setText("Hide Sidebar" if self.filters_window_visible else "Show Sidebar")
+        if hasattr(self, "results_filter_btn"):
+            self.results_filter_btn.sync_visibility(self.filters_window_visible)
+
+    def _set_filter_panel_visible(self, visible: bool) -> None:
+        for section in self._filter_sections:
+            section.set_expanded(visible)
+        self._sync_filter_toggle_ui()
+        self._sync_filters_window_ui()
+
+    def toggle_filter_panel(self) -> None:
+        self._set_filter_panel_visible(not self.filter_panel_open)
 
     def toggle_filters_window(self) -> None:
         self._set_filters_window_visible(not self.filters_window_visible)
@@ -1044,11 +1171,11 @@ class LprRepeatedPage(QWidget):
 
     def reset_filters(self) -> None:
         self.has_searched = False
-        self.date_from_field.clear()
-        self.date_to_field.clear()
+        self._apply_default_date_range()
         self.camera_select.set_value([])
-        self.repeated_spin.setValue(2)
+        self.repeated_input.setValue(2)
         self.repeated_store.clear()
+        self._set_filter_panel_visible(False)
         self.refresh()
 
     def perform_search(self) -> None:
@@ -1065,7 +1192,7 @@ class LprRepeatedPage(QWidget):
             date_from=date_from,
             date_to=date_to,
             camera_ids=self.camera_select.value(),
-            repeated_number=self.repeated_spin.value(),
+            repeated_number=int(self.repeated_input.value()),
         )
         self.has_searched = True
         results = self.repeated_store.search(payload)
@@ -1084,7 +1211,7 @@ class LprRepeatedPage(QWidget):
             "date_to": self.date_to_field.value(),
             "camera_ids": self.camera_select.value(),
             "start": 0,
-            "length": 300,
+            "length": max(300, self.rows_per_page * 4),
             "order_col": 0,
             "order": "asc",
         }
@@ -1100,10 +1227,11 @@ class LprRepeatedPage(QWidget):
         super().resizeEvent(event)
         self._sync_filters_panel_width(animate=False)
         self._update_filters_scroll_height()
+
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         path = QPainterPath()
         path.addRect(QRectF(self.rect()))
-        p.fillPath(path, QColor(Constants.DARK_BG))   # dark bg — cards float above it
+        p.fillPath(path, QColor(Constants.DARK_BG))
         super().paintEvent(event)

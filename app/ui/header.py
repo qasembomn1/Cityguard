@@ -16,7 +16,10 @@ from PySide6.QtGui import (
     QColor, QPainter, QPainterPath, QCursor, QFont, QPen,
 )
 from app.constants._init_ import Constants
+from app.ui.dialog import PrimeDialog
 from app.ui.menu import PrimeMenu
+from app.views.report_shared import REPORT_MENU_SECTIONS
+from app.views.search_shared import SEARCH_MENU_SECTIONS
 from app.widgets.svg_widget import SvgWidget
 
 BASE_DIR  = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -232,6 +235,18 @@ class TabBar(QWidget):
     navigate = Signal(str)
 
     _GROUPED_PATHS = {
+        "/search/lpr": {
+            "/search/lpr",
+            "/search/lpr/repeated",
+            "/search/lprmap",
+            "/search/face",
+            "/search/facemap",
+        },
+        "/report/lpr": {
+            "/report/lpr",
+            "/report/face",
+            "/report/face_count",
+        },
         "/user/profile": {
             "/user/profile",
             "/user/users",
@@ -550,15 +565,18 @@ class _NotifCard(QFrame):
         if kind == "lpr":
             thumb.setFixedSize(96, 58)
             thumb.setStyleSheet("background:#2a2a2a;border-radius:4px;border:none;")
-            glyph = "🚗"
+            thumb_label = "LPR"
         else:
             thumb.setFixedSize(58, 58)
             thumb.setStyleSheet("background:#2a2a2a;border-radius:29px;border:none;")
-            glyph = "👤"
+            thumb_label = "FACE"
 
-        tl = QLabel(glyph)
+        tl = QLabel(thumb_label)
         tl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        tl.setStyleSheet("font-size:22px;background:transparent;border:none;")
+        tl.setStyleSheet(
+            "color:#c8cdd8;font-size:12px;font-weight:700;letter-spacing:0.8px;"
+            "background:transparent;border:none;"
+        )
         tl_lay = QVBoxLayout(thumb)
         tl_lay.setContentsMargins(0, 0, 0, 0)
         tl_lay.addWidget(tl)
@@ -581,13 +599,13 @@ class _NotifCard(QFrame):
                 "background:transparent;border:none;"
             )
 
-        cam = QLabel(f"📷  {notif.get('camera', '')}")
+        cam = QLabel(f"Camera: {notif.get('camera', '')}")
         cam.setStyleSheet(f"color:{_TEXT};font-size:11px;background:transparent;border:none;")
-        ts  = QLabel(f"🕐  {notif.get('created', '')}")
+        ts  = QLabel(f"Time: {notif.get('created', '')}")
         ts.setStyleSheet(f"color:{_TEXT};font-size:11px;background:transparent;border:none;")
 
         if kind == "lpr":
-            col_lbl = QLabel(f"🎨  {notif.get('color', '')}")
+            col_lbl = QLabel(f"Color: {notif.get('color', '')}")
             col_lbl.setStyleSheet(
                 f"color:{_TEXT};font-size:11px;background:transparent;border:none;"
             )
@@ -604,69 +622,85 @@ class _NotifCard(QFrame):
         row.addStretch()
 
         # Alert badge
-        alert = QLabel("⚠")
+        alert = QLabel("ALERT")
         alert.setStyleSheet(
-            "color:white;font-size:11px;background:#ef4444;"
-            "border-radius:10px;padding:2px 4px;border:none;"
+            "color:white;font-size:10px;font-weight:700;background:#ef4444;"
+            "border-radius:10px;padding:3px 7px;border:none;"
         )
         row.addWidget(alert, alignment=Qt.AlignmentFlag.AlignTop)
 
 
 # ── Notification dialog ───────────────────────────────────────────────────────
-class NotificationDialog(QDialog):
+class NotificationDialog(PrimeDialog):
     """
-    Two-column modal: LPR Alerts | Face Recognition Alerts
-    Mirrors Vue's <Dialog> notification panel.
+    Header notifications rendered inside the shared PrimeDialog shell.
     """
 
     def __init__(self, lpr_notifs: list, face_notifs: list, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Notifications Center")
-        self.setMinimumSize(980, 620)
-        self.setModal(True)
-        self.setStyleSheet(f"QDialog{{background:{_BG};color:{_TEXT};}}")
+        super().__init__(
+            title="Notifications Center",
+            parent=parent,
+            width=1040,
+            height=680,
+            show_footer=False,
+        )
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(20, 16, 20, 16)
-        root.setSpacing(12)
+        content = QWidget()
+        root = QVBoxLayout(content)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(14)
 
-        # Header row
-        hdr = QHBoxLayout()
-        bell = QLabel("🔔")
-        bell.setStyleSheet("font-size:22px;background:transparent;")
+        summary = QFrame()
+        summary.setObjectName("notificationSummary")
+        summary_layout = QHBoxLayout(summary)
+        summary_layout.setContentsMargins(16, 14, 16, 14)
+        summary_layout.setSpacing(0)
+
         title_col = QVBoxLayout()
         title_col.setSpacing(2)
-        t = QLabel("Notifications Center")
+        t = QLabel("Notifications")
         t.setStyleSheet(
-            f"color:{_TEXT};font-size:18px;font-weight:bold;background:transparent;"
+            f"color:{_TEXT};font-size:16px;font-weight:bold;background:transparent;"
         )
         total = len(lpr_notifs) + len(face_notifs)
         sub = QLabel(f"{total} total alert{'s' if total != 1 else ''}")
         sub.setStyleSheet("color:#9ca3af;font-size:12px;background:transparent;")
         title_col.addWidget(t)
         title_col.addWidget(sub)
-        hdr.addWidget(bell, alignment=Qt.AlignmentFlag.AlignTop)
-        hdr.addSpacing(8)
-        hdr.addLayout(title_col)
-        hdr.addStretch()
-        root.addLayout(hdr)
+        summary_layout.addLayout(title_col, 1)
+        root.addWidget(summary)
 
-        # Separator
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
         sep.setStyleSheet(f"color:{_BORDER};background:{_BORDER};max-height:1px;")
         root.addWidget(sep)
 
-        # Two columns
         cols = QHBoxLayout()
         cols.setSpacing(12)
-        cols.addWidget(self._col("🚗  LPR Alerts", lpr_notifs, "lpr"))
-        cols.addWidget(self._col("👤  Face Recognition Alerts", face_notifs, "face"))
+        cols.addWidget(self._col("LPR Alerts", lpr_notifs, "lpr"))
+        cols.addWidget(self._col("Face Recognition Alerts", face_notifs, "face"))
         root.addLayout(cols)
 
+        self.set_content(content, fill_height=True)
+        self.setStyleSheet(
+            self.styleSheet()
+            + f"""
+            #notificationSummary {{
+                background: {_DARK};
+                border: 1px solid {_BORDER};
+                border-radius: 14px;
+            }}
+            QFrame#notificationColumn {{
+                background: {_DARK};
+                border: 1px solid {_BORDER};
+                border-radius: 14px;
+            }}
+            """
+        )
+
     def _col(self, hdr_text: str, notifs: list, kind: str) -> QWidget:
-        col = QWidget()
-        col.setStyleSheet(f"background:{_DARK};border-radius:8px;")
+        col = QFrame()
+        col.setObjectName("notificationColumn")
         lay = QVBoxLayout(col)
         lay.setContentsMargins(12, 12, 12, 12)
         lay.setSpacing(8)
@@ -721,7 +755,7 @@ class NotificationDialog(QDialog):
                 cl.addWidget(_NotifCard(n, kind))
         else:
             empty = QLabel(
-                f"📭\n\nNo {'LPR' if kind == 'lpr' else 'Face'} Alerts\nAll clear!"
+                f"No {'LPR' if kind == 'lpr' else 'Face'} alerts\nAll clear"
             )
             empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
             empty.setStyleSheet("color:#6b7280;font-size:13px;background:transparent;")
@@ -823,7 +857,7 @@ class AppHeader(QWidget):
         self._notif_btn.clicked.connect(self._open_notifications)
 
         self._search_btn = IconBtn(svg_icon="search.svg")
-        self._search_btn.setToolTip("Search")
+        self._search_btn.setToolTip("Search & Reports")
         self._search_btn.clicked.connect(self._open_search_menu)
 
         self._profile_btn = IconBtn(svg_icon="profile.svg")
@@ -843,23 +877,41 @@ class AppHeader(QWidget):
         def nav(path):
             return lambda: self._on_navigate(path)
 
+        def menu_items_for(section_label, sections):
+            for section in sections:
+                if section.get("label") == section_label:
+                    return list(section.get("items") or [])
+            return []
+
+        def quick_menu_items(sections):
+            items = []
+            for section in sections:
+                for item in section.get("items") or []:
+                    items.append(
+                        {
+                            "label": str(item.get("label") or ""),
+                            "command": nav(str(item.get("path") or "")),
+                        }
+                    )
+            return items
+
         # ── Main menu (tiered, attached to + button) ──────────────────────────
         mm = QMenu(self)
         mm.setStyleSheet(_MENU_QSS)
 
         lpr = mm.addMenu("🚗  LPR")
         lpr.setStyleSheet(_MENU_QSS)
-        lpr.addAction("🔍  Search",         nav("/search/lpr"))
-        lpr.addAction("🗺️   Map Search",     nav("/search/lprmap"))
-        lpr.addAction("🔄  Repeated",        nav("/search/lpr/repeated"))
-        lpr.addAction("📊  Report",           nav("/report/lpr"))
+        for item in menu_items_for("LPR", SEARCH_MENU_SECTIONS):
+            lpr.addAction(str(item.get("label") or ""), nav(str(item.get("path") or "")))
+        for item in menu_items_for("LPR", REPORT_MENU_SECTIONS):
+            lpr.addAction(str(item.get("label") or ""), nav(str(item.get("path") or "")))
 
         face = mm.addMenu("👤  Face")
         face.setStyleSheet(_MENU_QSS)
-        face.addAction("🔍  Search",          nav("/search/face"))
-        face.addAction("🗺️   Map Search",      nav("/search/facemap"))
-        face.addAction("📊  Report",           nav("/report/face"))
-        face.addAction("📊  Face Count Report",nav("/report/face_count"))
+        for item in menu_items_for("Face", SEARCH_MENU_SECTIONS):
+            face.addAction(str(item.get("label") or ""), nav(str(item.get("path") or "")))
+        for item in menu_items_for("Face", REPORT_MENU_SECTIONS):
+            face.addAction(str(item.get("label") or ""), nav(str(item.get("path") or "")))
 
         users = mm.addMenu("👥  User Management")
         users.setStyleSheet(_MENU_QSS)
@@ -897,25 +949,12 @@ class AppHeader(QWidget):
         self._search_menu = PrimeMenu(
             items=[
                 {
-                    "label": "LPR",
-                    "items": [
-                        {"label": "LPR Search", "command": nav("/search/lpr")},
-                        {"label": "LPR Map Search", "command": nav("/search/lprmap")},
-                    ],
+                    "label": "Search",
+                    "items": quick_menu_items(SEARCH_MENU_SECTIONS),
                 },
                 {
-                    "label": "Face",
-                    "items": [
-                        {"label": "Face Search", "command": nav("/search/face")},
-                        {"label": "Face Map Search", "command": nav("/search/facemap")},
-                    ],
-                },
-                {
-                    "label": "Playback",
-                    "items": [
-                        {"label": "Camera Playback", "command": nav("/camera/playback")},
-                        {"label": "Repeated Search", "command": nav("/search/lpr/repeated")},
-                    ],
+                    "label": "Reports",
+                    "items": quick_menu_items(REPORT_MENU_SECTIONS),
                 },
             ],
             parent=self,

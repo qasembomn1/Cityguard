@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QToolButton,
 )
 
 
@@ -99,6 +100,35 @@ class SelectItem(QWidget):
             s = box_size
             painter.drawLine(x + int(s * 0.22), y + int(s * 0.55), x + int(s * 0.43), y + int(s * 0.74))
             painter.drawLine(x + int(s * 0.43), y + int(s * 0.74), x + int(s * 0.78), y + int(s * 0.30))
+
+
+class ChevronIcon(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._expanded = False
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.setFixedSize(12, 8)
+
+    def set_expanded(self, expanded: bool):
+        if self._expanded == expanded:
+            return
+        self._expanded = expanded
+        self.update()
+
+    def sizeHint(self):
+        return QSize(12, 8)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(QPen(QColor("#9ca3af"), 1.5))
+
+        if self._expanded:
+            painter.drawLine(1, 5, 6, 1)
+            painter.drawLine(6, 1, 11, 5)
+        else:
+            painter.drawLine(1, 2, 6, 6)
+            painter.drawLine(6, 6, 11, 2)
 
 
 class PopupPanel(QFrame):
@@ -257,9 +287,15 @@ class PrimeMultiSelect(QWidget):
         self._label.setStyleSheet("color:#d6d6d6; background:transparent;")
         button_layout.addWidget(self._label, 1)
 
-        self._arrow = QLabel("⌄", self.button)
-        self._arrow.setAttribute(Qt.WA_TransparentForMouseEvents)
-        self._arrow.setStyleSheet("color:#aeb6c2; background:transparent; font-size:14px;")
+        self.clear_btn = QToolButton(self.button)
+        self.clear_btn.setCursor(Qt.PointingHandCursor)
+        self.clear_btn.setText("×")
+        self.clear_btn.setFixedSize(20, 20)
+        self.clear_btn.hide()
+        self.clear_btn.clicked.connect(self.clear)
+        button_layout.addWidget(self.clear_btn, 0, Qt.AlignRight | Qt.AlignVCenter)
+
+        self._arrow = ChevronIcon(self.button)
         button_layout.addWidget(self._arrow, 0, Qt.AlignRight | Qt.AlignVCenter)
 
         self.popup = PopupPanel(self)
@@ -283,6 +319,19 @@ class PrimeMultiSelect(QWidget):
             QPushButton:hover {
                 background-color: #30343a;
                 border: 1px solid #3a3f45;
+            }
+            QToolButton {
+                background: transparent;
+                border: none;
+                border-radius: 10px;
+                color: #aeb6c2;
+                font-size: 15px;
+                font-weight: 600;
+                padding: 0;
+            }
+            QToolButton:hover {
+                background-color: #3a3f45;
+                color: #f3f4f6;
             }
         """)
 
@@ -309,6 +358,17 @@ class PrimeMultiSelect(QWidget):
     def value(self):
         return self.selected_values
 
+    def clear(self):
+        self.selected_values = []
+        if self.popup is not None:
+            self.popup.selected_values.clear()
+            for item in self.popup.items:
+                item.set_checked(False)
+            if self.popup.isVisible():
+                self.popup.hide()
+        self.refresh_label()
+        self.selection_changed.emit(self.selected_values)
+
     def refresh_label(self):
         labels = [
             label for opt in self.options
@@ -322,8 +382,9 @@ class PrimeMultiSelect(QWidget):
             text = self.placeholder
 
         self._label.setText(text)
+        self.clear_btn.setVisible(bool(labels))
         popup_visible = bool(self.popup is not None and self.popup.isVisible())
-        self._arrow.setText("⌃" if popup_visible else "⌄")
+        self._arrow.set_expanded(popup_visible)
 
     def _popup_screen_geometry(self):
         anchor = self.button.mapToGlobal(self.button.rect().center())

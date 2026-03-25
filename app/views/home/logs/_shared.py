@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from PySide6.QtCore import QDateTime, QSize, Qt, Signal,QRectF
-from PySide6.QtGui import QIcon,QPainterPath,QPainter,QColor
+from PySide6.QtCore import QSize, Qt, Signal, QRectF
+from PySide6.QtGui import QIcon, QPainterPath, QPainter, QColor
 from PySide6.QtWidgets import (
-    QDateTimeEdit,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -28,6 +28,7 @@ from app.ui.button import PrimeButton
 from app.ui.select import PrimeSelect
 from app.ui.table import PrimeDataTable, PrimeTableColumn
 from app.ui.toast import PrimeToastHost
+from app.views.lpr.search import ClearableDateTimeField
 from app.views.home.user._shared import USER_MANAGEMENT_SIDEBAR_STYLES
 
 
@@ -41,7 +42,7 @@ def _icon_path(name: str) -> str:
 
 
 LOG_NAV_ITEMS = [
-    ("User\nLogs", "user_management.svg", "/log/user"),
+    ("User\nLogs", "user_managment.svg", "/log/user"),
     ("Client\nLogs", "devices.svg", "/log/client"),
     ("Camera\nLogs", "live_view.svg", "/log/camera"),
 ]
@@ -53,7 +54,7 @@ LOG_PAGE_CONFIG = {
         "entity_key": "user",
         "title": "User Logs",
         "entity_label": "User",
-        "entity_icon": "user_management.svg",
+        "entity_icon": "user_managment.svg",
     },
     "/log/client": {
         "resource": "client_log",
@@ -70,42 +71,6 @@ LOG_PAGE_CONFIG = {
         "entity_icon": "live_view.svg",
     },
 }
-
-
-class OptionalDateTimeField(QWidget):
-    def __init__(self, placeholder: str, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
-
-        self._null_value = QDateTime.fromString("2000-01-01 00:00", "yyyy-MM-dd HH:mm")
-
-        self.edit = QDateTimeEdit()
-        self.edit.setCalendarPopup(True)
-        self.edit.setDisplayFormat("yyyy-MM-dd HH:mm")
-        self.edit.setMinimumDateTime(self._null_value)
-        self.edit.setSpecialValueText(placeholder)
-        self.edit.setDateTime(self._null_value)
-        layout.addWidget(self.edit, 1)
-
-        self.clear_btn = QToolButton()
-        self.clear_btn.setObjectName("logsDateClear")
-        self.clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.clear_btn.setToolTip("Clear value")
-        self.clear_btn.setIcon(QIcon(_icon_path("close.svg")))
-        self.clear_btn.setIconSize(QSize(14, 14))
-        self.clear_btn.clicked.connect(lambda: self.edit.setDateTime(self._null_value))
-        layout.addWidget(self.clear_btn)
-
-    def value(self) -> Optional[str]:
-        current = self.edit.dateTime()
-        if current <= self._null_value:
-            return None
-        return current.toString("yyyy-MM-dd HH:mm:ss")
-
-    def clear(self) -> None:
-        self.edit.setDateTime(self._null_value)
 
 
 class ActivityLogsSidebar(QFrame):
@@ -290,10 +255,10 @@ class ActivityLogsPage(QWidget):
         self.action_edit.setPlaceholderText("Enter action")
         panel_layout.addWidget(self._field_block("Action", self.action_edit))
 
-        self.start_edit = OptionalDateTimeField("Start date")
+        self.start_edit = ClearableDateTimeField("Start Time")
         panel_layout.addWidget(self._field_block("Start Date", self.start_edit))
 
-        self.end_edit = OptionalDateTimeField("End date")
+        self.end_edit = ClearableDateTimeField("End Time")
         panel_layout.addWidget(self._field_block("End Date", self.end_edit))
 
         actions = QHBoxLayout()
@@ -342,8 +307,7 @@ class ActivityLogsPage(QWidget):
                 font-size: 13px;
             }
             QLineEdit#logsSearchInput,
-            QLineEdit#logsTextInput,
-            QDateTimeEdit {
+            QLineEdit#logsTextInput {
                 background: #2b2e34;
                 border: 1px solid #3a3e46;
                 border-radius: 10px;
@@ -352,9 +316,33 @@ class ActivityLogsPage(QWidget):
                 min-height: 24px;
             }
             QLineEdit#logsSearchInput:focus,
-            QLineEdit#logsTextInput:focus,
-            QDateTimeEdit:focus {
+            QLineEdit#logsTextInput:focus {
                 border-color: #4e7cff;
+            }
+            QFrame#dateField {
+                background: #232a34;
+                border: 1px solid #364152;
+                border-radius: 12px;
+            }
+            QLineEdit#datePickerDisplay {
+                background: transparent;
+                border: none;
+                color: #f8fafc;
+                min-height: 46px;
+                padding: 0 12px;
+                selection-background-color: #3b82f6;
+            }
+            QToolButton#datePickerButton, QToolButton#dateClearButton {
+                background: transparent;
+                border: none;
+                min-width: 38px;
+                max-width: 38px;
+                min-height: 46px;
+                max-height: 46px;
+                padding: 0;
+            }
+            QToolButton#datePickerButton:hover, QToolButton#dateClearButton:hover {
+                background: rgba(96, 165, 250, 0.14);
             }
             QFrame#logsFilterPanel {
                 background: #171b21;
@@ -412,19 +400,6 @@ class ActivityLogsPage(QWidget):
                 background: #3a2b11;
                 color: #fcd34d;
                 border: 1px solid #a16207;
-            }
-            QToolButton#logsDateClear {
-                background: #2b2e34;
-                border: 1px solid #3a3e46;
-                border-radius: 10px;
-                color: #eef2f8;
-                min-width: 38px;
-                max-width: 38px;
-                min-height: 38px;
-                max-height: 38px;
-            }
-            QToolButton#logsDateClear:hover {
-                background: #353942;
             }
             """
         )
@@ -503,13 +478,18 @@ class ActivityLogsPage(QWidget):
         self.filter_panel.setVisible(visible)
         self.filter_btn.setText("Hide Filters" if visible else "Filters")
 
+    def _format_filter_datetime(self, value: Optional[datetime]) -> Optional[str]:
+        if value is None:
+            return None
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+
     def _current_filters(self) -> Dict[str, Any]:
         entity_value = self.entity_select.value()
         return {
             "entity_id": int(entity_value) if entity_value not in (None, "") else None,
             "action": self.action_edit.text().strip() or None,
-            "start_date": self.start_edit.value(),
-            "end_date": self.end_edit.value(),
+            "start_date": self._format_filter_datetime(self.start_edit.value()),
+            "end_date": self._format_filter_datetime(self.end_edit.value()),
         }
 
     def load_logs(self, notify: bool = False) -> None:

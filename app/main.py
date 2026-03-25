@@ -126,6 +126,28 @@ _PATH_INFO = _build_path_info()
 
 
 _GROUPED_TAB_META = {
+    "/search/lpr": {
+        "paths": {
+            "/search/lpr",
+            "/search/lpr/repeated",
+            "/search/lprmap",
+            "/search/face",
+            "/search/facemap",
+        },
+        "name": "Search",
+        "icon": "",
+        "svg_icon": _resolve_svg_icon(_icon("search.svg")),
+    },
+    "/report/lpr": {
+        "paths": {
+            "/report/lpr",
+            "/report/face",
+            "/report/face_count",
+        },
+        "name": "Report",
+        "icon": "",
+        "svg_icon": _resolve_svg_icon(_icon("report.svg")),
+    },
     "/user/profile": {
         "paths": {
             "/user/profile",
@@ -135,7 +157,7 @@ _GROUPED_TAB_META = {
         },
         "name": "User Management",
         "icon": "",
-        "svg_icon": _resolve_svg_icon(_icon("user_management.svg")),
+        "svg_icon": _resolve_svg_icon(_icon("user_managment.svg")),
     },
     "/device/clients": {
         "paths": {

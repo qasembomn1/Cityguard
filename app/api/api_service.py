@@ -12,12 +12,19 @@ from typing import Any, Dict, Optional
 import httpx
 from app.utils.env import resolve_http_base_url
 
+_SSL_CONTEXT: ssl.SSLContext | None = None
+
 
 def _build_ssl_context() -> ssl.SSLContext:
+    global _SSL_CONTEXT
+    if _SSL_CONTEXT is not None:
+        return _SSL_CONTEXT
+
     for env_name in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"):
         candidate = (os.getenv(env_name) or "").strip()
         if candidate and os.path.isfile(candidate):
-            return ssl.create_default_context(cafile=candidate)
+            _SSL_CONTEXT = ssl.create_default_context(cafile=candidate)
+            return _SSL_CONTEXT
 
     for candidate in (
         "/etc/ssl/certs/ca-certificates.crt",
@@ -26,9 +33,11 @@ def _build_ssl_context() -> ssl.SSLContext:
         "/etc/ssl/cert.pem",
     ):
         if os.path.isfile(candidate):
-            return ssl.create_default_context(cafile=candidate)
+            _SSL_CONTEXT = ssl.create_default_context(cafile=candidate)
+            return _SSL_CONTEXT
 
-    return ssl.create_default_context()
+    _SSL_CONTEXT = ssl.create_default_context()
+    return _SSL_CONTEXT
 
 
 def _json_compatible(value: Any) -> Any:
@@ -64,18 +73,29 @@ class ApiService:
         resolved_base_url = resolve_http_base_url(base_url)
         self.base_url = resolved_base_url
         self.timeout = timeout
-        self._client: httpx.Client | None = None
+        self._clients: dict[str, httpx.Client] = {}
 
     @property
     def client(self) -> httpx.Client:
-        if self._client is None:
-            self._client = httpx.Client(
-                timeout=self.timeout,
-                follow_redirects=True,
-                trust_env=False,
-                verify=_build_ssl_context(),
-            )
-        return self._client
+        return self._client_for_url(self.base_url)
+
+    def _client_for_url(self, url: str) -> httpx.Client:
+        scheme = (urllib.parse.urlsplit(str(url or self.base_url)).scheme or "http").lower()
+        client = self._clients.get(scheme)
+        if client is not None:
+            return client
+
+        client_kwargs = {
+            "timeout": self.timeout,
+            "follow_redirects": True,
+            "trust_env": False,
+        }
+        if scheme == "https":
+            client_kwargs["verify"] = _build_ssl_context()
+
+        client = httpx.Client(**client_kwargs)
+        self._clients[scheme] = client
+        return client
 
     def _auth_token(self) -> str:
         return (
@@ -120,7 +140,7 @@ class ApiService:
             ) from exc
 
         try:
-            response = self.client.request(
+            response = self._client_for_url(url).request(
                 method=method.upper(),
                 url=url,
                 content=body,

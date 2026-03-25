@@ -661,11 +661,11 @@ class ClientPage(QWidget):
         side_layout.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
 
         nav_items = [
-            ("Clients", "user_management.svg", "/device/clients"),
-            ("Cameras", "devices.svg", "/device/cameras"),
+            ("Clients", "client.svg", "/device/clients"),
+            ("Cameras", "camera.svg", "/device/cameras"),
             # ("GPS", "gps.svg", "/device/gps"),
             # ("Bodycam", "bodycam.svg", "/device/body-cam"),
-            ("Access", "activation.svg", "/device/access-control"),
+            # ("Access", "activation.svg", "/device/access-control"),
         ]
         current_path = "/device/clients"
         for label, icon_name, path in nav_items:

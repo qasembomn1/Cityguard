@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
+from app.models._api_datetime import to_api_iso_text
 from app.models.lpr.region import plate_region
 
 
@@ -22,15 +23,7 @@ def _as_text(value: Any) -> str:
 
 
 def _iso_text(value: Any) -> Optional[str]:
-    if value is None or value == "":
-        return None
-    if isinstance(value, datetime):
-        if value.tzinfo is None:
-            value = value.replace(tzinfo=SEARCH_TIMEZONE)
-        else:
-            value = value.astimezone(SEARCH_TIMEZONE)
-        return value.isoformat(timespec="seconds")
-    return _as_text(value) or None
+    return to_api_iso_text(value, SEARCH_TIMEZONE)
 
 
 @dataclass

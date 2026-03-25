@@ -16,6 +16,7 @@ class ScreenCamera:
 @dataclass
 class Screen:
     screen_type: int
+    is_main: bool = False
     cameras: list[ScreenCamera] = field(default_factory=list)
 
 
@@ -23,6 +24,7 @@ class Screen:
 class ScreenResponse:
     id: int
     screen_type: int
+    is_main: bool = False
     created_at: Optional[datetime] = None
     cameras: list[ScreenCamera] = field(default_factory=list)
 

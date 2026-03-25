@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
+from app.models._api_datetime import to_api_iso_text
 
 SEARCH_TIMEZONE = timezone(timedelta(hours=3))
 
@@ -95,16 +96,7 @@ def _embedding_payload(value: Any) -> str:
 
 
 def _iso_text(value: Any) -> Optional[str]:
-    if value is None or value == "":
-        return None
-    if isinstance(value, datetime):
-        if value.tzinfo is None:
-            value = value.replace(tzinfo=SEARCH_TIMEZONE)
-        else:
-            value = value.astimezone(SEARCH_TIMEZONE)
-        return value.isoformat(timespec="seconds")
-    text = str(value).strip()
-    return text or None
+    return to_api_iso_text(value, SEARCH_TIMEZONE)
 
 
 def _to_search_timezone(value: datetime) -> datetime:

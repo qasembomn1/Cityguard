@@ -1,1 +1,13 @@
-pyinstaller run.py --onefile --windowed --name Cityguard --add-data app/resources:app/resources --hidden-import=PySide6.QtCore --hidden-import=PySide6.QtGui --hidden-import=PySide6.QtWidgets --hidden-import=PySide6.QtSvg --hidden-import=PySide6.QtNetwork --hidden-import=PySide6.QtWebSockets --hidden-import=httpx --hidden-import=httpcore --hidden-import=anyio --hidden-import=sniffio --hidden-import=h11
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOCAL_PYINSTALLER="$ROOT_DIR/cityguard/bin/pyinstaller"
+
+if [[ -x "$LOCAL_PYINSTALLER" ]]; then
+    PYINSTALLER="$LOCAL_PYINSTALLER"
+else
+    PYINSTALLER="${PYINSTALLER:-pyinstaller}"
+fi
+
+exec "$PYINSTALLER" --noconfirm --clean "$ROOT_DIR/Cityguard.spec"

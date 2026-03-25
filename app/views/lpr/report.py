@@ -30,31 +30,11 @@ from app.store.home.user.department_store import DepartmentStore as CameraDepart
 from app.ui.button import PrimeButton
 from app.ui.multiselect import PrimeMultiSelect
 from app.ui.select import PrimeSelect
+from app.ui.sidebar_toggle import SidebarToggleButton
 from app.ui.table import PrimeDataTable, PrimeTableColumn
 from app.ui.toast import PrimeToastHost
 from app.views.report_shared import REPORT_SIDEBAR_STYLES, ReportSidebar
 from app.views.lpr.search import ClearableDateTimeField, FilterAccordionSection
-
-
-class SummaryCard(QFrame):
-    def __init__(self, title: str, parent: Optional[QWidget] = None) -> None:
-        super().__init__(parent)
-        self.setObjectName("reportSummaryCard")
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 12, 14, 12)
-        layout.setSpacing(4)
-
-        self.title_label = QLabel(title)
-        self.title_label.setObjectName("reportSummaryTitle")
-        layout.addWidget(self.title_label)
-
-        self.value_label = QLabel("0")
-        self.value_label.setObjectName("reportSummaryValue")
-        layout.addWidget(self.value_label)
-
-    def set_value(self, value: str) -> None:
-        self.value_label.setText(value)
 
 
 class LprReportPage(QWidget):
@@ -116,8 +96,8 @@ class LprReportPage(QWidget):
         root.setStretch(2, 4)
 
         content = QVBoxLayout(self.content_panel)
-        content.setContentsMargins(18, 18, 18, 18)
-        content.setSpacing(12)
+        content.setContentsMargins(14, 14, 14, 14)
+        content.setSpacing(10)
 
         hero_scroll = QScrollArea()
         hero_scroll.setObjectName("reportFiltersScroll")
@@ -133,37 +113,10 @@ class LprReportPage(QWidget):
         hero_frame.setObjectName("reportHero")
         hero_frame.setMinimumWidth(0)
         hero = QVBoxLayout(hero_frame)
-        hero.setContentsMargins(18, 18, 18, 18)
-        hero.setSpacing(14)
+        hero.setContentsMargins(14, 14, 14, 14)
+        hero.setSpacing(10)
         self.hero_frame = hero_frame
         hero_scroll.setWidget(hero_frame)
-
-        hero_head = QVBoxLayout()
-        hero_head.setContentsMargins(0, 0, 0, 0)
-        hero_head.setSpacing(6)
-        hero.addLayout(hero_head)
-
-        hero_text = QVBoxLayout()
-        hero_text.setContentsMargins(0, 0, 0, 0)
-        hero_text.setSpacing(4)
-        hero_head.addLayout(hero_text)
-
-        hero_title = QLabel("LPR Report")
-        hero_title.setObjectName("heroTitle")
-        hero_title.setWordWrap(True)
-        hero_text.addWidget(hero_title)
-
-        hero_hint = QLabel(
-            "Generate LPR or monthly reports by date range and selected cameras. "
-            "The request matches `/api/v1/report/lpr` with `report_type` set to `lpr` or `monthly`."
-        )
-        hero_hint.setObjectName("heroHint")
-        hero_hint.setWordWrap(True)
-        hero_text.addWidget(hero_hint)
-
-        self.filter_state_chip = QLabel("Report builder")
-        self.filter_state_chip.setObjectName("heroChip")
-        hero_head.addWidget(self.filter_state_chip, 0, Qt.AlignmentFlag.AlignLeft)
 
         self.report_type_select = PrimeSelect(placeholder="Select report type")
         self.report_type_select.set_options(
@@ -185,10 +138,11 @@ class LprReportPage(QWidget):
 
         time_band = FilterAccordionSection(
             "Time Range",
-            "These date pickers control which report records are included.",
+            "",
             expanded=True,
             collapsible=False,
         )
+        time_band.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         time_layout = QGridLayout()
         time_layout.setContentsMargins(0, 0, 0, 0)
         time_layout.setHorizontalSpacing(12)
@@ -199,7 +153,7 @@ class LprReportPage(QWidget):
             self._hero_field_block(
                 "Start Date & Time",
                 self.date_from_field,
-                "Required field for the report request.",
+                "",
             ),
             0,
             0,
@@ -208,7 +162,7 @@ class LprReportPage(QWidget):
             self._hero_field_block(
                 "End Date & Time",
                 self.date_to_field,
-                "Required field for the report request.",
+                "",
             ),
             1,
             0,
@@ -217,69 +171,44 @@ class LprReportPage(QWidget):
 
         setup_band = FilterAccordionSection(
             "Report Setup",
-            "Choose the report format before running the request.",
+            "",
             expanded=True,
             collapsible=False,
         )
+        setup_band.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         setup_band.body_layout.addWidget(self._field_block("Report Type", self.report_type_select))
         hero.addWidget(setup_band)
 
         source_band = FilterAccordionSection(
             "Source",
-            "Leave the camera list empty to include every available camera.",
+            "",
             expanded=True,
             collapsible=False,
         )
+        source_band.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         source_band.body_layout.addWidget(self._field_block("Camera", self.camera_select))
         hero.addWidget(source_band)
 
         hero_actions = QVBoxLayout()
         hero_actions.setContentsMargins(0, 0, 0, 0)
-        hero_actions.setSpacing(8)
+        hero_actions.setSpacing(6)
         hero.addLayout(hero_actions)
 
-        self.reset_btn = PrimeButton("Reset Filters", variant="secondary", mode="outline", size="sm")
+        self.reset_btn = PrimeButton("Reset Filters", variant="secondary", mode="outline", size="sm", width=132)
         self.reset_btn.clicked.connect(self.reset_filters)
         hero_actions.addWidget(self.reset_btn)
 
-        self.export_btn = PrimeButton("Export CSV", variant="secondary", mode="outline", size="sm")
+        self.export_btn = PrimeButton("Export CSV", variant="secondary", mode="outline", size="sm", width=132)
         self.export_btn.clicked.connect(self.export_csv)
         hero_actions.addWidget(self.export_btn)
 
-        self.search_btn = PrimeButton("Run Report", variant="primary", mode="filled", size="sm")
+        self.search_btn = PrimeButton("Run Report", variant="primary", mode="filled", size="sm", width=132)
         self.search_btn.clicked.connect(self.perform_report)
         hero_actions.addWidget(self.search_btn)
         self._allow_horizontal_shrink(self.reset_btn)
         self._allow_horizontal_shrink(self.export_btn)
         self._allow_horizontal_shrink(self.search_btn)
-
-        summary_frame = QFrame()
-        summary_frame.setObjectName("reportSummaryWrap")
-        summary_layout = QGridLayout(summary_frame)
-        summary_layout.setContentsMargins(0, 0, 0, 0)
-        summary_layout.setHorizontalSpacing(10)
-        summary_layout.setVerticalSpacing(10)
-        content.addWidget(summary_frame)
-
-        self.summary_rows = SummaryCard("Rows")
-        self.summary_records = SummaryCard("Total Records")
-        self.summary_unique = SummaryCard("Unique Vehicles")
-        self.summary_english = SummaryCard("English Plates")
-        self.summary_taxi = SummaryCard("Taxi Plates")
-        self.summary_private = SummaryCard("Private Plates")
-        self.summary_transport = SummaryCard("Transport Plates")
-
-        cards = [
-            self.summary_rows,
-            self.summary_records,
-            self.summary_unique,
-            self.summary_english,
-            self.summary_taxi,
-            self.summary_private,
-            self.summary_transport,
-        ]
-        for index, card in enumerate(cards):
-            summary_layout.addWidget(card, index // 4, index % 4)
+        hero.addStretch(1)
 
         toolbar_frame = QFrame()
         toolbar_frame.setObjectName("reportToolbar")
@@ -287,6 +216,10 @@ class LprReportPage(QWidget):
         toolbar.setContentsMargins(14, 14, 14, 14)
         toolbar.setSpacing(10)
         content.addWidget(toolbar_frame)
+
+        self.results_filter_btn = SidebarToggleButton(self.filters_window_visible, self)
+        self.results_filter_btn.clicked.connect(self.toggle_filters_window)
+        toolbar.addWidget(self.results_filter_btn, 0, Qt.AlignmentFlag.AlignVCenter)
 
         title_col = QVBoxLayout()
         title_col.setContentsMargins(0, 0, 0, 0)
@@ -298,15 +231,6 @@ class LprReportPage(QWidget):
         title_col.addWidget(page_title)
         title_col.addWidget(self.status_label)
         toolbar.addLayout(title_col, 1)
-
-        self.results_filter_btn = PrimeButton(
-            "Hide Sidebar" if self.filters_window_visible else "Show Sidebar",
-            variant="secondary",
-            mode="outline",
-            size="sm",
-        )
-        self.results_filter_btn.clicked.connect(self.toggle_filters_window)
-        toolbar.addWidget(self.results_filter_btn)
 
         self.table = PrimeDataTable(page_size=20, page_size_options=[10, 20, 50, 100], row_height=48, show_footer=True)
         self.table.set_columns(
@@ -334,10 +258,11 @@ class LprReportPage(QWidget):
         label.setObjectName("heroFieldLabel")
         layout.addWidget(label)
 
-        hint = QLabel(hint_text)
-        hint.setObjectName("heroFieldHint")
-        hint.setWordWrap(True)
-        layout.addWidget(hint)
+        if hint_text:
+            hint = QLabel(hint_text)
+            hint.setObjectName("heroFieldHint")
+            hint.setWordWrap(True)
+            layout.addWidget(hint)
 
         layout.addWidget(field)
         return wrapper
@@ -383,7 +308,7 @@ class LprReportPage(QWidget):
             QFrame#reportHero {
                 background: #171b22;
                 border: 1px solid #2b3240;
-                border-radius: 22px;
+                border-radius: 18px;
             }
             QFrame#filterAccordion {
                 background: #1f2630;
@@ -585,21 +510,6 @@ class LprReportPage(QWidget):
             QPushButton#datePopupPrimaryButton:hover {
                 background: #1d4ed8;
             }
-            QFrame#reportSummaryCard {
-                background: #11161d;
-                border: 1px solid #293241;
-                border-radius: 14px;
-            }
-            QLabel#reportSummaryTitle {
-                color: #93a1b6;
-                font-size: 11px;
-                font-weight: 700;
-            }
-            QLabel#reportSummaryValue {
-                color: #f8fafc;
-                font-size: 20px;
-                font-weight: 700;
-            }
             QScrollArea, QScrollArea > QWidget > QWidget {
                 background: transparent;
             }
@@ -628,16 +538,6 @@ class LprReportPage(QWidget):
             for item in self.report_store.rows
         ]
 
-    def _update_summary(self) -> None:
-        rows = self.report_store.rows
-        self.summary_rows.set_value(str(len(rows)))
-        self.summary_records.set_value(str(sum(item.total_records for item in rows)))
-        self.summary_unique.set_value(str(sum(item.unique_vehicles for item in rows)))
-        self.summary_english.set_value(str(sum(item.english_plates for item in rows)))
-        self.summary_taxi.set_value(str(sum(item.taxi_plates for item in rows)))
-        self.summary_private.set_value(str(sum(item.private_plates for item in rows)))
-        self.summary_transport.set_value(str(sum(item.transport_plates for item in rows)))
-
     def refresh(self) -> None:
         current_user = self.auth_store.current_user
         department_id = current_user.department_id if current_user is not None else None
@@ -647,7 +547,6 @@ class LprReportPage(QWidget):
 
         self.camera_select.set_options(self._camera_options())
         self.table.set_rows(self._rows())
-        self._update_summary()
 
         busy = self.report_store.loading
         self.search_btn.setEnabled(not busy)
@@ -655,8 +554,6 @@ class LprReportPage(QWidget):
         self.export_btn.setEnabled(not busy and bool(self.report_store.rows))
         self.results_filter_btn.setEnabled(not busy)
 
-        report_type = self.report_type_select.value() or "lpr"
-        self.filter_state_chip.setText(f"Type: {report_type}")
         if busy:
             self.status_label.setText("Loading report results...")
         elif self.report_store.rows:
@@ -673,7 +570,7 @@ class LprReportPage(QWidget):
             self.hero_scroll.setVisible(self.filters_window_visible)
         self._update_filters_scroll_height()
         if hasattr(self, "results_filter_btn"):
-            self.results_filter_btn.setText("Hide Sidebar" if self.filters_window_visible else "Show Sidebar")
+            self.results_filter_btn.sync_visibility(self.filters_window_visible)
 
     def _update_filters_scroll_height(self) -> None:
         if not hasattr(self, "hero_scroll"):
@@ -691,7 +588,7 @@ class LprReportPage(QWidget):
             available -= self.sidebar.width() + spacing
         if available <= 0:
             return 0
-        return max(0, min(340, int(available * 0.22)))
+        return max(0, min(300, max(200, int(available * 0.18))))
 
     def _set_filters_panel_width(self, width: int) -> None:
         if not hasattr(self, "filters_panel"):
@@ -743,7 +640,7 @@ class LprReportPage(QWidget):
         self._sync_filters_panel_width(animate=True)
         self._update_filters_scroll_height()
         if hasattr(self, "results_filter_btn"):
-            self.results_filter_btn.setText("Hide Sidebar" if self.filters_window_visible else "Show Sidebar")
+            self.results_filter_btn.sync_visibility(self.filters_window_visible)
 
     def toggle_filters_window(self) -> None:
         self._set_filters_window_visible(not self.filters_window_visible)

@@ -6,7 +6,7 @@ import os
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from app.models.camera import Camera
 from app.utils.env import resolve_http_base_url
@@ -74,6 +74,29 @@ class CameraService:
     def __init__(self) -> None:
         self._items: List[Camera] = []
         self._next_id = 1
+
+    def _request_with_fallback(
+        self,
+        attempts: Iterable[tuple[str, str]],
+        data: Optional[Dict[str, Any]] = None,
+        params: Optional[Dict[str, Any]] = None,
+        auth: bool = False,
+    ) -> Any:
+        last_exc: Exception | None = None
+        for method, path in attempts:
+            try:
+                return _api_request_json(
+                    path,
+                    method=method,
+                    data=data,
+                    params=params,
+                    auth=auth,
+                )
+            except Exception as exc:
+                last_exc = exc
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError("No camera API attempts configured.")
 
     def list_cameras(self, department_id: Optional[int] = None) -> List[Camera]:
         response = _api_request_json("/api/v1/cameras/")
@@ -174,6 +197,10 @@ class CameraService:
             face_max_size=self._as_int(raw.get("face_max_size"), 40),
             face_show_rect=self._as_bool(raw.get("face_show_rect")),
             face_count_line=str(raw.get("face_count_line") or ""),
+            lpr_show_rect=self._as_bool(raw.get("lpr_show_rect")),
+            lpr_min_size=self._as_int(raw.get("lpr_min_size"), 5),
+            lpr_max_size=self._as_int(raw.get("lpr_max_size"), 40),
+            lpr_min_confidence=self._as_int(raw.get("lpr_min_confidence"), 70),
             image=raw.get("image"),
             camera_type=raw.get("camera_type") if isinstance(raw.get("camera_type"), dict) else None,
             online=self._as_bool(raw.get("online"), self._as_bool(raw.get("is_live"))),
@@ -238,11 +265,22 @@ class CameraService:
         return self.get_camera(camera_id)
 
     def delete_camera(self, camera_id: int) -> None:
-        _api_request_json(
-            f"/api/v1/cameras/delete/{camera_id}",
-            method="DELETE",
-            auth=True,
-        )
+        try:
+            self._request_with_fallback(
+                (
+                    ("DELETE", f"/api/v1/cameras/delete/{camera_id}"),
+                    ("DELETE", f"/api/v1/cameras/delete/{camera_id}/"),
+                ),
+                auth=True,
+            )
+        except RuntimeError as exc:
+            message = str(exc)
+            if "[401]" in message or "[403]" in message:
+                raise RuntimeError(
+                    "Camera delete was rejected by the backend authentication layer. "
+                    "The delete endpoint exists, but the current session/token was not accepted."
+                ) from exc
+            raise
         self._items = [c for c in self._items if c.id != camera_id]
 
     def get_camera(self, camera_id: int) -> Camera:
@@ -283,11 +321,13 @@ class CameraService:
             ip_address = str(
                 item.get("camera_ip") or item.get("ip_address") or item.get("ip") or item.get("host") or ""
             ).strip()
+            if any(str(existing.camera_ip or "").strip() == ip_address for existing in self._items):
+                continue
             port_value = item.get("camera_port") or item.get("port")
             try:
                 port = int(port_value)
             except (TypeError, ValueError):
-                port = 80
+                port = 554
             manufacturer = str(
                 item.get("manufacturer") or item.get("brand") or item.get("camera_type")
                 or item.get("title") or item.get("name") or "Unknown"
@@ -299,7 +339,7 @@ class CameraService:
                 display_name = manufacturer if manufacturer.lower() != "unknown" else f"Camera {ip_address}"
             normalized.append({
                 "ip_address": ip_address,
-                "port": max(1, min(port, 65535)),
+                "port": 554 if port <= 0 else max(1, min(port, 65535)),
                 "manufacturer": manufacturer,
                 "username": username,
                 "password": password,

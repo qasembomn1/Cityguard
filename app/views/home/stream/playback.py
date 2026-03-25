@@ -839,10 +839,6 @@ class PlaybackPage(QWidget):
         sidebar_title.setObjectName("playbackSidebarTitle")
         sidebar_layout.addWidget(sidebar_title)
 
-        sidebar_copy = QLabel("Select up to 4 cameras, choose a month, then open a recorded day.")
-        sidebar_copy.setObjectName("playbackSidebarCopy")
-        sidebar_copy.setWordWrap(True)
-        sidebar_layout.addWidget(sidebar_copy)
 
         self.search_edit = QLineEdit()
         self.search_edit.setPlaceholderText("Search camera by name or IP")

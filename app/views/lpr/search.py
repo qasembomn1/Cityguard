@@ -59,10 +59,12 @@ from app.ui.dialog import PrimeDialog
 from app.ui.input import PrimeInput
 from app.ui.multiselect import PrimeMultiSelect
 from app.ui.select import PrimeSelect
+from app.ui.sidebar_toggle import SidebarToggleButton
 from app.ui.table import PrimeDataTable, PrimeTableColumn
 from app.ui.toast import show_toast_message
 from app.utils.digits import normalize_ascii_digits
 from app.utils.env import resolve_http_base_url
+from app.views.search_shared import SEARCH_SIDEBAR_STYLES, SearchSidebar
 
 
 _ICONS_DIR = os.path.abspath(
@@ -887,6 +889,10 @@ class LprSearchPage(QWidget):
         root.setSpacing(12)
         self._root_layout = root
 
+        self.sidebar = SearchSidebar("/search/lpr", self)
+        self.sidebar.navigate.connect(self.navigate.emit)
+        root.addWidget(self.sidebar, 0)
+
         self.date_from_input = ClearableDateTimeField("Start Time")
         self.date_to_input = ClearableDateTimeField("End Time")
         self._allow_horizontal_shrink(self.date_from_input)
@@ -894,7 +900,7 @@ class LprSearchPage(QWidget):
 
         plate_section = FilterAccordionSection(
             "Plate Filters",
-            "Refine plate matching after setting the main search range.",
+            "",
             expanded=True,
             collapsible=False,
         )
@@ -949,9 +955,10 @@ class LprSearchPage(QWidget):
         self.conf_select.set_value(0)
         digits_conf_row.addWidget(self._field_block("Min Confidence", self.conf_select), 1, 0)
         plate_section_layout.addLayout(digits_conf_row)
+        plate_section_layout.addStretch(1)
         source_section = FilterAccordionSection(
             "Source And Status",
-            "Limit search to selected cameras or only blacklist or whitelist hits.",
+            "",
             expanded=True,
             collapsible=False,
         )
@@ -968,6 +975,7 @@ class LprSearchPage(QWidget):
         checks.addWidget(self.blacklist_check)
         checks.addWidget(self.whitelist_check)
         source_section_layout.addLayout(checks)
+        source_section_layout.addStretch(1)
 
         self.filters_panel = QFrame()
         self.filters_panel.setObjectName("filtersPanel")
@@ -986,8 +994,9 @@ class LprSearchPage(QWidget):
         main_layout.setContentsMargins(18, 16, 18, 18)
         main_layout.setSpacing(14)
         root.addWidget(main_panel, 1)
-        root.setStretch(0, 1)
-        root.setStretch(1, 4)
+        root.setStretch(0, 0)
+        root.setStretch(1, 1)
+        root.setStretch(2, 4)
 
         self.hero_scroll = QScrollArea()
         self.hero_scroll.setObjectName("filtersScroll")
@@ -1022,19 +1031,9 @@ class LprSearchPage(QWidget):
         hero_title.setWordWrap(True)
         hero_text.addWidget(hero_title)
 
-        hero_hint = QLabel("Search by time range and plate number. Open advanced filters only when you need to narrow the results.")
-        hero_hint.setObjectName("heroHint")
-        hero_hint.setWordWrap(True)
-        hero_text.addWidget(hero_hint)
-
-        helper_chip = QLabel("Quick search")
-        helper_chip.setObjectName("heroChip")
-        self.filter_state_chip = helper_chip
-        hero_head.addWidget(helper_chip, 0, Qt.AlignmentFlag.AlignLeft)
-
         time_band = FilterAccordionSection(
             "Time Range",
-            "These date pickers control which LPR records are searched.",
+            "",
             expanded=True,
             collapsible=False,
         )
@@ -1044,13 +1043,15 @@ class LprSearchPage(QWidget):
         time_layout.setHorizontalSpacing(12)
         time_layout.setVerticalSpacing(10)
         time_layout.setColumnStretch(0, 1)
+        time_layout.setRowStretch(2, 1)
         hero_layout.addWidget(time_band)
         time_band.body_layout.addLayout(time_layout)
+        time_band.body_layout.addStretch(1)
         time_layout.addWidget(
             self._hero_field_block(
                 "Start Date & Time",
                 self.date_from_input,
-                "Search from this timestamp.",
+                "",
             ),
             0,
             0,
@@ -1059,7 +1060,7 @@ class LprSearchPage(QWidget):
             self._hero_field_block(
                 "End Date & Time",
                 self.date_to_input,
-                "Search until this timestamp.",
+                "",
             ),
             1,
             0,
@@ -1067,7 +1068,7 @@ class LprSearchPage(QWidget):
 
         query_band = FilterAccordionSection(
             "Plate Lookup",
-            "Optional. Leave blank to search every plate inside the selected time range.",
+            "",
             expanded=True,
             collapsible=False,
         )
@@ -1080,9 +1081,10 @@ class LprSearchPage(QWidget):
             self._hero_field_block(
                 "Plate Number",
                 self.plate_input,
-                "Search for a specific plate number.",
+                "",
             )
         )
+        query_layout.addStretch(1)
         hero_layout.addWidget(query_band)
         hero_layout.addWidget(plate_section)
         hero_layout.addWidget(source_section)
@@ -1093,7 +1095,7 @@ class LprSearchPage(QWidget):
         self.reset_btn = PrimeButton("Reset Filters", variant="secondary", mode="outline", size="sm")
         self.reset_btn.clicked.connect(self.reset_filters)
 
-        self.filter_toggle_btn = PrimeButton("All Filters Visible", variant="secondary", mode="outline", size="sm")
+        self.filter_toggle_btn = PrimeButton("Hide Filters", variant="secondary", mode="outline", size="sm")
         self.filter_toggle_btn.clicked.connect(self.toggle_filter_panel)
         self.filter_toggle_btn.hide()
 
@@ -1120,6 +1122,10 @@ class LprSearchPage(QWidget):
         toolbar.setSpacing(10)
         main_layout.addWidget(toolbar_frame)
 
+        self.results_filter_btn = SidebarToggleButton(self.filters_window_visible, self)
+        self.results_filter_btn.clicked.connect(self.toggle_filters_window)
+        toolbar.addWidget(self.results_filter_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+
         left_cluster = QVBoxLayout()
         left_cluster.setContentsMargins(0, 0, 0, 0)
         left_cluster.setSpacing(3)
@@ -1130,15 +1136,6 @@ class LprSearchPage(QWidget):
         left_cluster.addWidget(self.page_title)
         left_cluster.addWidget(self.page_summary)
         toolbar.addLayout(left_cluster, 1)
-
-        self.results_filter_btn = PrimeButton(
-            "Hide Sidebar" if self.filters_window_visible else "Show Sidebar",
-            variant="secondary",
-            mode="outline",
-            size="sm",
-        )
-        self.results_filter_btn.clicked.connect(self.toggle_filters_window)
-        toolbar.addWidget(self.results_filter_btn)
 
         self.grid_cols_combo = PrimeSelect(
             options=[{"label": f"{c} Col", "value": c} for c in GRID_OPTIONS],
@@ -1249,7 +1246,8 @@ class LprSearchPage(QWidget):
 
     def _apply_style(self) -> None:
         self.setStyleSheet(
-            """
+            SEARCH_SIDEBAR_STYLES
+            + """
             QWidget {
                 color: #e2e8f0;
                 font-size: 13px;
@@ -1800,7 +1798,7 @@ class LprSearchPage(QWidget):
             policy.setHorizontalPolicy(QSizePolicy.Policy.Expanding)
         widget.setSizePolicy(policy)
 
-    def _hero_field_block(self, label_text: str, field: QWidget, hint_text: str) -> QWidget:
+    def _hero_field_block(self, label_text: str, field: QWidget, hint_text: str = "") -> QWidget:
         wrapper = QWidget()
         wrapper.setObjectName("heroFieldBlock")
         layout = QVBoxLayout(wrapper)
@@ -1811,10 +1809,11 @@ class LprSearchPage(QWidget):
         label.setObjectName("heroFieldLabel")
         layout.addWidget(label)
 
-        hint = QLabel(hint_text)
-        hint.setObjectName("heroFieldHint")
-        hint.setWordWrap(True)
-        layout.addWidget(hint)
+        if hint_text:
+            hint = QLabel(hint_text)
+            hint.setObjectName("heroFieldHint")
+            hint.setWordWrap(True)
+            layout.addWidget(hint)
 
         layout.addWidget(field)
         return wrapper
@@ -1862,20 +1861,16 @@ class LprSearchPage(QWidget):
     def _sync_filter_toggle_ui(self, *_args) -> None:
         if self._filter_sections and all(not section.is_collapsible() for section in self._filter_sections):
             self.filter_panel_open = True
-            self.filter_toggle_btn.setText("All Filters Visible")
-            self.filter_state_chip.setText("All filters visible")
+            self.filter_toggle_btn.setText("Hide Filters")
             return
         open_count = sum(1 for section in self._filter_sections if section.is_expanded())
         self.filter_panel_open = open_count > 0
         if open_count <= 0:
             self.filter_toggle_btn.setText("Show Filters")
-            self.filter_state_chip.setText("Filters collapsed")
         elif open_count >= len(self._filter_sections):
             self.filter_toggle_btn.setText("Hide Filters")
-            self.filter_state_chip.setText("All filters open")
         else:
             self.filter_toggle_btn.setText("Hide Filters")
-            self.filter_state_chip.setText(f"{open_count} sections open")
 
     def _sync_filters_window_ui(self) -> None:
         if hasattr(self, "filters_panel"):
@@ -1884,7 +1879,7 @@ class LprSearchPage(QWidget):
             self.hero_scroll.setVisible(self.filters_window_visible)
         self._update_filters_scroll_height()
         if hasattr(self, "results_filter_btn"):
-            self.results_filter_btn.setText("Hide Sidebar" if self.filters_window_visible else "Show Sidebar")
+            self.results_filter_btn.sync_visibility(self.filters_window_visible)
 
     def _update_filters_scroll_height(self) -> None:
         if not hasattr(self, "hero_scroll"):
@@ -1952,7 +1947,7 @@ class LprSearchPage(QWidget):
         self._sync_filters_panel_width(animate=True)
         self._update_filters_scroll_height()
         if hasattr(self, "results_filter_btn"):
-            self.results_filter_btn.setText("Hide Sidebar" if self.filters_window_visible else "Show Sidebar")
+            self.results_filter_btn.sync_visibility(self.filters_window_visible)
 
     def _set_filter_panel_visible(self, visible: bool) -> None:
         for section in self._filter_sections:

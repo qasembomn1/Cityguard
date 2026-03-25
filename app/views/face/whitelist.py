@@ -40,8 +40,13 @@ from app.store.auth import AuthStore
 from app.store.home.face.face_whitelist_store import FaceWhitelistStore
 from app.store.home.user.department_store import DepartmentStore as CameraDepartmentStore
 from app.ui.button import PrimeButton
+from app.ui.dialog import PrimeDialog
+from app.ui.input import PrimeInput
+from app.ui.multiselect import PrimeMultiSelect
+from app.ui.select import PrimeSelect
 from app.ui.table import PrimeDataTable, PrimeTableColumn
 from app.ui.confirm_dialog import PrimeConfirmDialog
+from app.ui.text_area import PrimeTextArea
 from app.ui.toast import PrimeToastHost, show_toast_message
 from app.views.watchlist_shared import WATCHLIST_SIDEBAR_STYLES, WatchlistSidebar
 
@@ -204,16 +209,22 @@ class RemoteImageLabel(QLabel):
         self.setText("")
 
 
-class AddImageDialog(QDialog):
+class AddImageDialog(PrimeDialog):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
-        super().__init__(parent)
+        super().__init__(
+            title="Add Image",
+            parent=parent,
+            width=520,
+            height=440,
+            ok_text="Add",
+            cancel_text="Done",
+        )
         self._image_path = ""
         self._person_name = ""
         self._person_id = ""
-        self.setWindowTitle("Add Image")
-        self.resize(520, 440)
 
-        root = QVBoxLayout(self)
+        content = QWidget()
+        root = QVBoxLayout(content)
         root.setContentsMargins(18, 18, 18, 18)
         root.setSpacing(12)
 
@@ -235,34 +246,22 @@ class AddImageDialog(QDialog):
         picker_actions.setSpacing(8)
         root.addLayout(picker_actions)
 
-        self.choose_btn = QPushButton("Choose Image")
+        self.choose_btn = PrimeButton("Choose Image", variant="primary", size="sm", width=132)
         self.choose_btn.clicked.connect(self._pick_image)
         picker_actions.addWidget(self.choose_btn)
 
-        self.clear_btn = QPushButton("Clear")
+        self.clear_btn = PrimeButton("Clear", variant="light", mode="outline", size="sm", width=92)
         self.clear_btn.clicked.connect(self.clear_selected_image)
         picker_actions.addWidget(self.clear_btn)
 
         picker_actions.addStretch(1)
 
-        footer = QHBoxLayout()
-        footer.setSpacing(8)
-        root.addLayout(footer)
+        self.set_content(content, fill_height=True)
+        self.ok_button.clicked.disconnect()
+        self.ok_button.clicked.connect(self._submit)
 
-        self.close_btn = QPushButton("Done")
-        self.close_btn.clicked.connect(self.reject)
-        footer.addWidget(self.close_btn)
-
-        self.submit_btn = QPushButton("Add Image")
-        self.submit_btn.clicked.connect(self._submit)
-        footer.addWidget(self.submit_btn)
-
-        self.setStyleSheet(
+        content.setStyleSheet(
             """
-            QDialog {
-                background: #171b21;
-                color: #eef2f8;
-            }
             QLabel#faceDialogInfo {
                 color: #f8fafc;
                 font-size: 14px;
@@ -280,7 +279,6 @@ class AddImageDialog(QDialog):
                 font-size: 13px;
             }
             """
-            + _DIALOG_BUTTON_QSS
         )
 
     def set_person(self, entry: FaceWhitelistEntry, template_count: int) -> None:
@@ -330,13 +328,19 @@ class AddImageDialog(QDialog):
             return
         self.accept()
 
-class LowSimilarityDialog(QDialog):
+class LowSimilarityDialog(PrimeDialog):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
-        super().__init__(parent)
-        self.setWindowTitle("Image doesn't match")
-        self.resize(420, 220)
+        super().__init__(
+            title="Image doesn't match",
+            parent=parent,
+            width=420,
+            height=220,
+            ok_text="Create",
+            cancel_text="Retry",
+        )
 
-        root = QVBoxLayout(self)
+        content = QWidget()
+        root = QVBoxLayout(content)
         root.setContentsMargins(18, 18, 18, 18)
         root.setSpacing(12)
 
@@ -350,24 +354,9 @@ class LowSimilarityDialog(QDialog):
         self.detail_label.setObjectName("faceLowSimDetail")
         root.addWidget(self.detail_label)
 
-        actions = QHBoxLayout()
-        actions.setSpacing(8)
-        root.addLayout(actions)
-
-        self.retry_btn = QPushButton("Try Another Image")
-        self.retry_btn.clicked.connect(self.reject)
-        actions.addWidget(self.retry_btn)
-
-        self.create_btn = QPushButton("Create New Record")
-        self.create_btn.clicked.connect(self.accept)
-        actions.addWidget(self.create_btn)
-
-        self.setStyleSheet(
+        self.set_content(content)
+        content.setStyleSheet(
             """
-            QDialog {
-                background: #171b21;
-                color: #eef2f8;
-            }
             QLabel#faceLowSimTitle {
                 color: #f8fafc;
                 font-size: 15px;
@@ -378,7 +367,6 @@ class LowSimilarityDialog(QDialog):
                 font-size: 12px;
             }
             """
-            + _DIALOG_BUTTON_QSS
         )
 
     def set_error(self, error: LowSimilarityError) -> None:
@@ -388,9 +376,7 @@ class LowSimilarityDialog(QDialog):
         )
 
 
-class PersonFormDialog(QFrame):
-    submitted = Signal()
-    cancelled = Signal()
+class PersonFormDialog(PrimeDialog):
     validation_error = Signal(str)
 
     def __init__(
@@ -404,37 +390,25 @@ class PersonFormDialog(QFrame):
         edit_hint_text: str = "Update whitelist person details. Use the image actions in the table to manage templates.",
         parent: Optional[QWidget] = None,
     ) -> None:
-        super().__init__(parent)
+        super().__init__(
+            title=title_text,
+            parent=parent,
+            width=640,
+            height=980,
+            ok_text="Update" if entry is not None else "Save",
+            cancel_text="Cancel",
+        )
         self._entry = entry
         self._selected_image_path = ""
         self._camera_options = list(camera_options)
         self._title_text = title_text
         self._create_hint_text = create_hint_text
         self._edit_hint_text = edit_hint_text
-        self.setObjectName("faceFormCard")
-        self.setFrameShape(QFrame.Shape.NoFrame)
-        self.setMinimumWidth(520)
-        self.setMaximumWidth(560)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
 
-        root = QVBoxLayout(self)
+        content = QWidget()
+        root = QVBoxLayout(content)
         root.setContentsMargins(18, 18, 18, 18)
         root.setSpacing(12)
-
-        title_row = QHBoxLayout()
-        title_row.setSpacing(8)
-        root.addLayout(title_row)
-
-        self.title_label = QLabel(self._title_text)
-        self.title_label.setObjectName("faceEditorTitle")
-        title_row.addWidget(self.title_label, 1)
-
-        close_btn = QToolButton()
-        close_btn.setObjectName("faceFormCloseButton")
-        close_btn.setText("×")
-        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        close_btn.clicked.connect(lambda: self.cancelled.emit())
-        title_row.addWidget(close_btn)
 
         hint_text = self._edit_hint_text if entry is not None else self._create_hint_text
         self.hint_label = QLabel(hint_text)
@@ -452,11 +426,11 @@ class PersonFormDialog(QFrame):
         image_actions.setSpacing(8)
         root.addLayout(image_actions)
 
-        self.choose_image_btn = QPushButton("Choose Image")
+        self.choose_image_btn = PrimeButton("Choose Image", variant="primary", size="sm", width=132)
         self.choose_image_btn.clicked.connect(self._pick_image)
         image_actions.addWidget(self.choose_image_btn)
 
-        self.clear_image_btn = QPushButton("Clear")
+        self.clear_image_btn = PrimeButton("Clear", variant="light", mode="outline", size="sm", width=92)
         self.clear_image_btn.clicked.connect(self._clear_image)
         image_actions.addWidget(self.clear_image_btn)
 
@@ -466,13 +440,8 @@ class PersonFormDialog(QFrame):
         self.edit_notice.setVisible(entry is not None)
         root.addWidget(self.edit_notice)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        root.addWidget(scroll, 1)
-
         body = QWidget()
-        scroll.setWidget(body)
+        root.addWidget(body, 1)
 
         form = QVBoxLayout(body)
         form.setContentsMargins(0, 0, 0, 0)
@@ -493,85 +462,53 @@ class PersonFormDialog(QFrame):
         self.hair_color_edit = self._line_edit("Hair color")
         top_grid.addWidget(self._field_block("Hair Color", self.hair_color_edit), 0, 1)
 
-        self.age_spin = QSpinBox()
-        self.age_spin.setRange(0, 150)
-        self.age_spin.setSpecialValueText("Unset")
-        self.age_spin.setValue(0)
+        self.age_spin = PrimeInput(type="number", minimum=0, maximum=150, decimals=0, value=0, placeholder_text="Unset")
         top_grid.addWidget(self._field_block("Age", self.age_spin), 1, 0)
 
-        self.gender_select = QComboBox()
-        self.gender_select.addItem("Unset", "")
-        self.gender_select.addItem("Male", "Male")
-        self.gender_select.addItem("Female", "Female")
+        self.gender_select = PrimeSelect(
+            options=[
+                {"label": "Male", "value": "Male"},
+                {"label": "Female", "value": "Female"},
+            ],
+            placeholder="Unset",
+        )
         top_grid.addWidget(self._field_block("Gender", self.gender_select), 1, 1)
 
-        self.match_spin = QDoubleSpinBox()
-        self.match_spin.setRange(0.0, 100.0)
-        self.match_spin.setDecimals(2)
-        self.match_spin.setSuffix(" %")
-        self.match_spin.setSingleStep(1.0)
-        self.match_spin.setValue(60.0)
-        form.addWidget(self._field_block("Match Threshold", self.match_spin))
+        self.match_spin = PrimeInput(
+            type="number",
+            minimum=0,
+            maximum=100,
+            decimals=2,
+            value=60.0,
+            placeholder_text="60.00",
+        )
+        form.addWidget(self._field_block("Match Threshold (%)", self.match_spin))
 
-        self.camera_select = QListWidget()
-        self.camera_select.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
-        self.camera_select.setMinimumHeight(132)
-        self.camera_select.setMaximumHeight(180)
-        self.camera_select.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.camera_select.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
-        self.camera_select.setUniformItemSizes(True)
+        self.camera_select = PrimeMultiSelect(
+            options=self._camera_options,
+            placeholder="Select Cameras",
+        )
         self._load_camera_items()
         form.addWidget(self._field_block("Cameras", self.camera_select))
 
-        self.note_edit = QTextEdit()
-        self.note_edit.setMinimumHeight(88)
+        self.note_edit = PrimeTextArea(min_height=88, placeholder_text="Notes")
         form.addWidget(self._field_block("Notes", self.note_edit))
 
         buttons = QHBoxLayout()
         buttons.setSpacing(8)
+        buttons.addStretch(1)
         root.addLayout(buttons)
 
-        reset_btn = QPushButton("Reset")
+        reset_btn = PrimeButton("Reset", variant="light", mode="outline", size="sm", width=96)
         reset_btn.clicked.connect(self._reset_to_initial_state)
         buttons.addWidget(reset_btn)
 
-        cancel_btn = QPushButton("Cancel")
-        cancel_btn.clicked.connect(lambda: self.cancelled.emit())
-        buttons.addWidget(cancel_btn)
+        self.set_content(content, fill_height=True)
+        self.ok_button.clicked.disconnect()
+        self.ok_button.clicked.connect(self._submit)
 
-        self.save_btn = QPushButton("Update Details" if entry is not None else "Save Person")
-        self.save_btn.clicked.connect(self._submit)
-        buttons.addWidget(self.save_btn)
-
-        self.setStyleSheet(
+        content.setStyleSheet(
             """
-            QFrame#faceFormCard {
-                background: #171b21;
-                color: #eef2f8;
-                border: 1px solid #2b3340;
-                border-radius: 20px;
-            }
-            QLabel#faceEditorTitle {
-                color: #f8fafc;
-                font-size: 22px;
-                font-weight: 700;
-            }
-            QToolButton#faceFormCloseButton {
-                background: #1f2630;
-                border: 1px solid #344154;
-                border-radius: 14px;
-                color: #f8fafc;
-                font-size: 18px;
-                font-weight: 700;
-                min-width: 28px;
-                max-width: 28px;
-                min-height: 28px;
-                max-height: 28px;
-            }
-            QToolButton#faceFormCloseButton:hover {
-                background: #2f3c4d;
-                border-color: #4d76bb;
-            }
             QLabel#faceEditorHint {
                 color: #93a1b6;
                 font-size: 13px;
@@ -596,29 +533,7 @@ class PersonFormDialog(QFrame):
                 color: #93a1b6;
                 font-size: 13px;
             }
-            QLineEdit#faceTextInput,
-            QTextEdit,
-            QComboBox,
-            QListWidget,
-            QSpinBox,
-            QDoubleSpinBox {
-                background: #242a33;
-                border: 1px solid #364150;
-                border-radius: 10px;
-                color: #eef2f8;
-                padding: 8px 12px;
-                min-height: 24px;
-            }
-            QListWidget::item {
-                padding: 6px 8px;
-                border-radius: 6px;
-            }
-            QListWidget::item:selected {
-                background: #35507f;
-                color: #f8fafc;
-            }
             """
-            + _DIALOG_BUTTON_QSS
         )
 
         self.configure(
@@ -628,10 +543,9 @@ class PersonFormDialog(QFrame):
             prefill_image_path=prefill_image_path,
         )
 
-    def _line_edit(self, placeholder: str) -> QLineEdit:
-        field = QLineEdit()
+    def _line_edit(self, placeholder: str) -> PrimeInput:
+        field = PrimeInput(placeholder_text=placeholder)
         field.setObjectName("faceTextInput")
-        field.setPlaceholderText(placeholder)
         return field
 
     def _field_block(self, label_text: str, field: QWidget) -> QWidget:
@@ -667,10 +581,10 @@ class PersonFormDialog(QFrame):
         self._load_camera_items()
 
         is_edit = entry is not None
-        self.title_label.setText(self._title_text)
+        self.set_title(self._title_text)
         self.hint_label.setText(self._edit_hint_text if is_edit else self._create_hint_text)
         self.edit_notice.setVisible(is_edit)
-        self.save_btn.setText("Update Details" if is_edit else "Save Person")
+        self.set_ok_text("Update" if is_edit else "Save")
 
         if is_edit and entry is not None:
             self._apply_entry(entry)
@@ -698,38 +612,22 @@ class PersonFormDialog(QFrame):
             self._set_image(prefill_image_path)
 
     def _load_camera_items(self) -> None:
-        self.camera_select.clear()
-        for option in self._camera_options:
-            camera_id = option.get("value")
-            if camera_id is None:
-                continue
-            try:
-                normalized_id = int(camera_id)
-            except (TypeError, ValueError):
-                continue
-            label = str(option.get("label") or camera_id).strip()
-            item = QListWidgetItem(label)
-            item.setData(Qt.ItemDataRole.UserRole, normalized_id)
-            self.camera_select.addItem(item)
+        self.camera_select.set_options(self._camera_options)
 
     def _set_gender_value(self, value: Optional[str]) -> None:
         target = str(value or "").strip()
-        index = self.gender_select.findData(target)
-        self.gender_select.setCurrentIndex(index if index >= 0 else 0)
+        self.gender_select.set_value(target or None)
 
     def _gender_value(self) -> str:
-        return str(self.gender_select.currentData() or "").strip()
+        return str(self.gender_select.value() or "").strip()
 
     def _set_selected_camera_ids(self, camera_ids: List[int]) -> None:
-        selected = {int(item) for item in camera_ids if int(item) > 0}
-        for row in range(self.camera_select.count()):
-            item = self.camera_select.item(row)
-            item.setSelected(int(item.data(Qt.ItemDataRole.UserRole) or 0) in selected)
+        self.camera_select.set_value(camera_ids)
 
     def _selected_camera_ids(self) -> List[int]:
         values: List[int] = []
-        for item in self.camera_select.selectedItems():
-            camera_id = int(item.data(Qt.ItemDataRole.UserRole) or 0)
+        for item in self.camera_select.value():
+            camera_id = int(item or 0)
             if camera_id > 0:
                 values.append(camera_id)
         return values
@@ -739,13 +637,14 @@ class PersonFormDialog(QFrame):
         self.name_edit.setText(entry.name)
         self.face_color_edit.setText(entry.face_color)
         self.hair_color_edit.setText(entry.hair_color)
-        self.age_spin.setValue(entry.age or 0)
+        self.age_spin.setValue(int(entry.age or 0))
         self._set_gender_value(entry.gender if entry.gender in {"Male", "Female"} else None)
         self.match_spin.setValue(entry.similarity)
         self._set_selected_camera_ids(entry.camera_ids)
         self.note_edit.setPlainText(entry.note)
         self.choose_image_btn.setEnabled(False)
         self.clear_image_btn.setEnabled(False)
+        self.preview_label.setPixmap(QPixmap())
         self.preview_label.setText("Editing details only")
 
     def _pick_image(self) -> None:
@@ -786,7 +685,7 @@ class PersonFormDialog(QFrame):
         self.name_edit.setText(self._initial_payload.name)
         self.face_color_edit.setText(self._initial_payload.face_color)
         self.hair_color_edit.setText(self._initial_payload.hair_color)
-        self.age_spin.setValue(self._initial_payload.age or 0)
+        self.age_spin.setValue(int(self._initial_payload.age or 0))
         self._set_gender_value(self._initial_payload.gender or None)
         self.match_spin.setValue(self._initial_payload.match)
         self._set_selected_camera_ids(self._initial_payload.camera_ids)
@@ -797,7 +696,7 @@ class PersonFormDialog(QFrame):
             self._clear_image()
 
     def payload(self) -> FaceWhitelistPayload:
-        age_value = self.age_spin.value()
+        age_value = int(self.age_spin.value())
         return FaceWhitelistPayload(
             name=self.name_edit.text().strip(),
             face_color=self.face_color_edit.text().strip(),
@@ -812,20 +711,17 @@ class PersonFormDialog(QFrame):
     def selected_image_path(self) -> str:
         return self._selected_image_path
 
-    def is_edit_mode(self) -> bool:
-        return self._entry is not None
-
     def _submit(self) -> None:
         payload = self.payload()
         if not payload.name:
             self.validation_error.emit("Name is required.")
             return
-        if not self.is_edit_mode() and not self._selected_image_path:
+        if self._entry is None and not self._selected_image_path:
             self.validation_error.emit("Choose a primary face image first.")
             return
-        self.submitted.emit()
+        self.accept()
 
-class TemplatesDialog(QDialog):
+class TemplatesDialog(PrimeDialog):
     add_requested = Signal()
     delete_requested = Signal(str)
 
@@ -835,17 +731,21 @@ class TemplatesDialog(QDialog):
         auth_token: str = "",
         parent: Optional[QWidget] = None,
     ) -> None:
-        super().__init__(parent)
+        super().__init__(
+            title="Person Templates",
+            parent=parent,
+            width=960,
+            height=680,
+            show_footer=False,
+        )
         self._net = net
         self._auth_token = auth_token.strip()
         self._entry: Optional[FaceWhitelistEntry] = None
         self._templates: List[FaceWhitelistTemplate] = []
         self._can_manage = False
-        self.setWindowTitle("Person Templates")
-        self.resize(960, 680)
-        self.setMinimumSize(760, 560)
 
-        root = QVBoxLayout(self)
+        content = QWidget()
+        root = QVBoxLayout(content)
         root.setContentsMargins(18, 18, 18, 18)
         root.setSpacing(12)
 
@@ -857,7 +757,7 @@ class TemplatesDialog(QDialog):
         self.summary_label.setObjectName("faceDialogInfo")
         header.addWidget(self.summary_label, 1)
 
-        self.add_btn = QPushButton("Add Image")
+        self.add_btn = PrimeButton("Add Image", variant="primary", size="sm", width=120)
         self.add_btn.clicked.connect(lambda: self.add_requested.emit())
         header.addWidget(self.add_btn)
 
@@ -878,12 +778,9 @@ class TemplatesDialog(QDialog):
         self.empty_label.setObjectName("faceDialogHint")
         root.addWidget(self.empty_label)
 
-        self.setStyleSheet(
+        self.set_content(content, fill_height=True)
+        content.setStyleSheet(
             """
-            QDialog {
-                background: #171b21;
-                color: #eef2f8;
-            }
             QLabel#faceDialogInfo {
                 color: #f8fafc;
                 font-size: 14px;
@@ -903,7 +800,6 @@ class TemplatesDialog(QDialog):
                 font-size: 11px;
             }
             """
-            + _DIALOG_BUTTON_QSS
         )
 
     def set_auth_token(self, token: str) -> None:
@@ -1012,8 +908,6 @@ class FaceRegistryPage(QWidget):
         super().__init__(parent)
         self.toast = PrimeToastHost(self)
         self.net = QNetworkAccessManager(self)
-        self._person_form: Optional[PersonFormDialog] = None
-        self._person_form_entry: Optional[FaceWhitelistEntry] = None
 
         self.service = self.service_cls()
         self.auth_store = AuthStore(AuthService())
@@ -1099,9 +993,8 @@ class FaceRegistryPage(QWidget):
 
         toolbar.addStretch(1)
 
-        self.search_edit = QLineEdit()
+        self.search_edit = PrimeInput(placeholder_text="Search by name, gender, color, note, or camera...")
         self.search_edit.setObjectName("faceSearchInput")
-        self.search_edit.setPlaceholderText("Search by name, gender, color, note, or camera...")
         self.search_edit.setMaximumWidth(360)
         self.search_edit.textChanged.connect(self._on_search_changed)
         toolbar.addWidget(self.search_edit)
@@ -1332,51 +1225,22 @@ class FaceRegistryPage(QWidget):
             self._show_error(self.manage_error_text)
             return
 
-        if self._person_form is None:
-            self._person_form = PersonFormDialog(
-                camera_options=self._camera_options(),
-                entry=entry,
-                prefill_name=prefill_name,
-                prefill_image_path=prefill_image_path,
-                title_text=self.form_title_text,
-                create_hint_text=self.form_create_hint_text,
-                edit_hint_text=self.form_edit_hint_text,
-                parent=self.form_overlay,
-            )
-            self._person_form.validation_error.connect(self._show_error)
-            self._person_form.cancelled.connect(self._close_person_form)
-            self._person_form.submitted.connect(self._submit_person_form)
-            self.form_host_layout.insertWidget(1, self._person_form, 0, Qt.AlignmentFlag.AlignCenter)
-        else:
-            self._person_form.configure(
-                camera_options=self._camera_options(),
-                entry=entry,
-                prefill_name=prefill_name,
-                prefill_image_path=prefill_image_path,
-                title_text=self.form_title_text,
-                create_hint_text=self.form_create_hint_text,
-                edit_hint_text=self.form_edit_hint_text,
-            )
-        self._person_form_entry = entry
-        self.form_overlay.show()
-        self.form_overlay.raise_()
-        self._person_form.show()
-
-    def _close_person_form(self) -> None:
-        self._person_form_entry = None
-        if self._person_form is not None:
-            self._person_form.hide()
-        self.form_overlay.hide()
-
-    def _submit_person_form(self) -> None:
-        dialog = self._person_form
-        entry = self._person_form_entry
-        if dialog is None:
+        dialog = PersonFormDialog(
+            camera_options=self._camera_options(),
+            entry=entry,
+            prefill_name=prefill_name,
+            prefill_image_path=prefill_image_path,
+            title_text=self.form_title_text,
+            create_hint_text=self.form_create_hint_text,
+            edit_hint_text=self.form_edit_hint_text,
+            parent=self,
+        )
+        dialog.validation_error.connect(self._show_error)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
 
         payload = dialog.payload()
         image_path = dialog.selected_image_path()
-        self._close_person_form()
 
         if entry is not None:
             self.whitelist_store.update_entry(entry.identifier, payload)

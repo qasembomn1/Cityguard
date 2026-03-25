@@ -15,7 +15,7 @@ class Camera:
     door_number: Optional[int] = None
     roi: str = ""
     map_pos: str = ""
-    is_record: bool = False
+    is_record: bool = True
     is_process: bool = False
     is_live: bool = True
     is_ptz: bool = False
@@ -34,6 +34,10 @@ class Camera:
     face_max_size: int = 40
     face_show_rect: bool = False
     face_count_line: str = ""
+    lpr_show_rect: bool = False
+    lpr_min_size: int = 5
+    lpr_max_size: int = 40
+    lpr_min_confidence: int = 70
     image: Optional[str] = None
     camera_type: Optional[Dict[str, Any]] = None
     online: bool = False

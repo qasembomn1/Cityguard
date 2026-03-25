@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
+from app.models._api_datetime import to_api_iso_text
 from app.utils.list import extract_dict_list
 
 
@@ -22,15 +23,7 @@ def _as_text(value: Any) -> str:
 
 
 def _iso_text(value: Any) -> Optional[str]:
-    if value in (None, ""):
-        return None
-    if isinstance(value, datetime):
-        if value.tzinfo is None:
-            value = value.replace(tzinfo=REPORT_TIMEZONE)
-        else:
-            value = value.astimezone(REPORT_TIMEZONE)
-        return value.isoformat(timespec="seconds")
-    return _as_text(value) or None
+    return to_api_iso_text(value, REPORT_TIMEZONE)
 
 
 def _coerce_cell_value(value: Any) -> Any:

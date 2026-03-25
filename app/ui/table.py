@@ -401,7 +401,8 @@ class PrimeDataTable(QWidget):
             empty = QTableWidgetItem("No data found")
             empty.setTextAlignment(int(Qt.AlignmentFlag.AlignCenter))
             self.table.setItem(0, 0, empty)
-            self.table.setSpan(0, 0, 1, len(self._columns))
+            if len(self._columns) > 1:
+                self.table.setSpan(0, 0, 1, len(self._columns))
             self.table.setRowHeight(0, max(self._row_height, 56))
             self._update_pagination(total=len(rows), shown=0)
             return

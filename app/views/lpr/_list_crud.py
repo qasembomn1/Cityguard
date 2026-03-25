@@ -7,14 +7,11 @@ from PySide6.QtCore import QSize, Qt, Signal,QRectF
 from PySide6.QtGui import QIcon,QPainter,QPainterPath,QColor
 from app.constants._init_ import Constants
 from PySide6.QtWidgets import (
-    QDialog,
     QFormLayout,
     QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QPushButton,
-    QTextEdit,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -27,9 +24,13 @@ from app.services.home.lpr.list_service import LprRegistryService
 from app.store.auth import AuthStore
 from app.store.home.lpr.list_store import LprRegistryStore
 from app.store.home.user.department_store import DepartmentStore as CameraDepartmentStore
+from app.ui.button import PrimeButton
 from app.ui.confirm_dialog import PrimeConfirmDialog
+from app.ui.dialog import PrimeDialog
+from app.ui.input import PrimeInput
 from app.ui.multiselect import PrimeMultiSelect
 from app.ui.table import PrimeDataTable, PrimeTableColumn
+from app.ui.text_area import PrimeTextArea
 from app.ui.toast import show_toast_message
 from app.utils.digits import normalize_ascii_digits
 from app.views.watchlist_shared import WATCHLIST_SIDEBAR_STYLES, WatchlistSidebar
@@ -60,7 +61,7 @@ def _bind_ascii_digit_input(field: QLineEdit) -> None:
     field.textEdited.connect(lambda text, edit=field: _normalize_line_edit_digits(edit, text))
 
 
-class LprRegistryDialog(QDialog):
+class LprRegistryDialog(PrimeDialog):
     submitted = Signal(dict, bool)
 
     def __init__(
@@ -72,7 +73,14 @@ class LprRegistryDialog(QDialog):
         entry: Optional[LprListEntry] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
-        super().__init__(parent)
+        super().__init__(
+            title=page_title,
+            parent=parent,
+            width=980,
+            height=620,
+            ok_text="Update" if entry is not None else "Create",
+            cancel_text="Cancel",
+        )
         self.page_title = page_title
         self.entry = entry
         self.current_user_id = int(current_user_id or 0)
@@ -80,17 +88,10 @@ class LprRegistryDialog(QDialog):
         self._camera_options = list(camera_options)
         self._allowed_fields = set(allowed_fields)
 
-        self.setWindowTitle(page_title)
-        self.resize(980, 620)
-        self.setMinimumSize(920, 560)
-
-        root = QVBoxLayout(self)
+        content = QWidget()
+        root = QVBoxLayout(content)
         root.setContentsMargins(18, 18, 18, 18)
         root.setSpacing(16)
-
-        title = QLabel(page_title)
-        title.setObjectName("lprDialogTitle")
-        root.addWidget(title)
 
         forms = QHBoxLayout()
         forms.setSpacing(16)
@@ -106,23 +107,22 @@ class LprRegistryDialog(QDialog):
         right_form.setSpacing(10)
         forms.addLayout(right_form, 1)
 
-        self.plate_no_edit = QLineEdit()
-        self.color_edit = QLineEdit()
-        self.region_edit = QLineEdit()
-        self.type_edit = QLineEdit()
-        self.name_edit = QLineEdit()
-        self.apart_name_edit = QLineEdit()
-        self.phone_edit = QLineEdit()
-        self.car_model_edit = QLineEdit()
-        self.car_type_edit = QLineEdit()
+        self.plate_no_edit = PrimeInput(placeholder_text="Plate number")
+        self.color_edit = PrimeInput(placeholder_text="Color")
+        self.region_edit = PrimeInput(placeholder_text="Region")
+        self.type_edit = PrimeInput(placeholder_text="Plate type")
+        self.name_edit = PrimeInput(placeholder_text="Owner name")
+        self.apart_name_edit = PrimeInput(placeholder_text="Apartment name")
+        self.phone_edit = PrimeInput(placeholder_text="Phone")
+        self.car_model_edit = PrimeInput(placeholder_text="Car model")
+        self.car_type_edit = PrimeInput(placeholder_text="Car type")
         _bind_ascii_digit_input(self.plate_no_edit)
         _bind_ascii_digit_input(self.phone_edit)
         self.camera_select = PrimeMultiSelect(
             options=self._camera_options,
             placeholder="Select Cameras",
         )
-        self.note_edit = QTextEdit()
-        self.note_edit.setMinimumHeight(120)
+        self.note_edit = PrimeTextArea(min_height=120, placeholder_text="Add notes")
 
         if "plate_no" in self._allowed_fields:
             left_form.addRow("Plate Number *", self.plate_no_edit)
@@ -147,59 +147,39 @@ class LprRegistryDialog(QDialog):
             right_form.addRow("Cameras", self.camera_select)
 
         if "note" in self._allowed_fields:
-            root.addWidget(QLabel("Note"))
+            note_label = QLabel("Note")
+            note_label.setObjectName("lprFieldLabel")
+            root.addWidget(note_label)
             root.addWidget(self.note_edit)
 
         controls = QHBoxLayout()
+        controls.setContentsMargins(0, 0, 0, 0)
+        controls.setSpacing(10)
         controls.addStretch(1)
 
-        reset_btn = QPushButton("Reset")
+        reset_btn = PrimeButton("Reset", variant="light", mode="outline", size="sm", width=96)
         reset_btn.clicked.connect(self._reset)
         controls.addWidget(reset_btn)
-
-        cancel_btn = QPushButton("Cancel")
-        cancel_btn.clicked.connect(self.reject)
-        controls.addWidget(cancel_btn)
-
-        save_btn = QPushButton("Update" if self.is_edit_mode else "Create")
-        save_btn.clicked.connect(self._submit)
-        controls.addWidget(save_btn)
         root.addLayout(controls)
 
-        self.setStyleSheet(
+        self.set_content(content, fill_height=True)
+        self.ok_button.clicked.disconnect()
+        self.ok_button.clicked.connect(self._submit)
+
+        content.setStyleSheet(
             """
-            QDialog {
-                background: #171a1f;
-                color: #f1f5f9;
-            }
-            QLabel {
+            QLabel, QWidget {
                 color: #dbe4f3;
                 font-size: 13px;
                 font-weight: 600;
             }
-            QLabel#lprDialogTitle {
-                color: #f8fafc;
-                font-size: 20px;
+            QLabel#lprFieldLabel {
+                color: #dbe4f3;
+                font-size: 13px;
                 font-weight: 700;
             }
-            QLineEdit, QTextEdit {
-                background: #232831;
-                border: 1px solid #3a424f;
-                border-radius: 8px;
-                color: #f8fafc;
-                padding: 8px 10px;
-            }
-            QPushButton {
-                background: #2b3340;
-                border: 1px solid #425062;
-                border-radius: 8px;
-                color: #f8fafc;
-                padding: 7px 14px;
-                font-weight: 600;
-            }
-            QPushButton:hover {
-                background: #35507f;
-                border-color: #4d76bb;
+            QFormLayout {
+                row-wrap-policy: dontwraprows;
             }
             """
         )
@@ -349,15 +329,13 @@ class LprRegistryPage(QWidget):
         toolbar.setSpacing(10)
         panel_layout.addLayout(toolbar)
 
-        self.new_btn = QPushButton("+ New")
-        self.new_btn.setObjectName("lprNewBtn")
+        self.new_btn = PrimeButton("+ New", variant="primary", size="sm", width=110)
         self.new_btn.clicked.connect(self.open_create_dialog)
         toolbar.addWidget(self.new_btn)
 
         toolbar.addStretch(1)
 
-        self.search_edit = QLineEdit()
-        self.search_edit.setObjectName("lprSearchInput")
+        self.search_edit = PrimeInput(placeholder_text="Search by plate, owner, phone, camera...")
         self.search_edit.setPlaceholderText("Search by plate, owner, phone, camera...")
         self.search_edit.setMaximumWidth(340)
         self.search_edit.textChanged.connect(self._on_search_changed)
@@ -388,27 +366,6 @@ class LprRegistryPage(QWidget):
             QLabel#lprPageSubtitle {
                 color: #8fa0b8;
                 font-size: 13px;
-            }
-            QPushButton#lprNewBtn {
-                background: #3b82f6;
-                border: none;
-                border-radius: 10px;
-                color: white;
-                font-size: 14px;
-                font-weight: 700;
-                padding: 9px 18px;
-            }
-            QPushButton#lprNewBtn:hover {
-                background: #2f6ce3;
-            }
-            QLineEdit#lprSearchInput {
-                background: #2b2e34;
-                border: 1px solid #3a3e46;
-                border-radius: 10px;
-                color: #f5f7fb;
-                padding: 9px 12px;
-                font-size: 14px;
-                min-height: 24px;
             }
             """
         )

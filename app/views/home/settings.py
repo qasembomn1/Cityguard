@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+import re
 from datetime import datetime
 from typing import Any
 
@@ -9,17 +11,13 @@ from PySide6.QtGui import QIcon,QColor,QPainter,QPainterPath
 from app.constants._init_ import Constants
 from PySide6.QtWidgets import (
     QButtonGroup,
-    QComboBox,
-    QDateEdit,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMainWindow,
     QScrollArea,
     QSizePolicy,
-    QSpinBox,
     QStackedWidget,
     QToolButton,
     QVBoxLayout,
@@ -31,6 +29,10 @@ from app.services.home.settings_service import SettingsService
 from app.store.home.setting.settings_store import SettingsStore
 from app.ui.button import PrimeButton
 from app.ui.confirm_dialog import PrimeConfirmDialog
+from app.ui.date_picker import PrimeDatePicker
+from app.ui.input import PrimeInput
+from app.ui.password_dialog import PrimePasswordDialog
+from app.ui.select import PrimeSelect
 from app.ui.toast import PrimeToastHost
 from app.widgets.svg_widget import SvgWidget
 
@@ -52,34 +54,45 @@ class OptionalDateField(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
 
-        self.edit = QDateEdit()
-        self.edit.setCalendarPopup(True)
-        self.edit.setDisplayFormat("yyyy-MM-dd")
-        self.edit.setMinimumDate(_NULL_DATE)
-        self.edit.setSpecialValueText("Not set")
-        self.edit.setDate(_NULL_DATE)
-        self.edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.edit = PrimeDatePicker(placeholder="Not set", display_format="yyyy-MM-dd")
         layout.addWidget(self.edit, 1)
 
-        self.clear_btn = QToolButton()
-        self.clear_btn.setObjectName("settingsDateClear")
-        self.clear_btn.setText("Clear")
-        self.clear_btn.clicked.connect(lambda: self.edit.setDate(_NULL_DATE))
+        self.clear_btn = PrimeButton("Clear", variant="light", mode="outline", size="sm", width=110)
+        self.clear_btn.setMinimumWidth(72)
+        self.clear_btn.setFixedWidth(72)
+        self.clear_btn.clicked.connect(self.edit.clear)
         layout.addWidget(self.clear_btn)
 
     def value(self) -> str | None:
         value = self.edit.date()
-        if value <= _NULL_DATE:
+        if value is None or not value.isValid() or value <= _NULL_DATE:
             return None
         return value.toString("yyyy-MM-dd")
 
     def set_value(self, value: str | None) -> None:
         text = str(value or "").strip()
         if not text:
-            self.edit.setDate(_NULL_DATE)
+            self.edit.clear()
             return
-        qdate = QDate.fromString(text[:10], "yyyy-MM-dd")
-        self.edit.setDate(qdate if qdate.isValid() else _NULL_DATE)
+        self.edit.set_date(text[:10])
+
+
+class IntegerField(PrimeInput):
+    def __init__(self, minimum: int, maximum: int, parent: QWidget | None = None) -> None:
+        super().__init__(
+            parent=parent,
+            type="number",
+            minimum=minimum,
+            maximum=maximum,
+            decimals=0,
+            value=minimum,
+        )
+
+    def value(self) -> int:
+        return int(round(super().value()))
+
+    def setValue(self, val) -> None:
+        super().setValue(int(val or 0))
 
 
 class SettingsPage(QWidget):
@@ -90,7 +103,7 @@ class SettingsPage(QWidget):
         ("record", "Record", "report.svg"),
         ("alarm", "Alarm", "notification.svg"),
         ("repeated", "Repeated", "calendar.svg"),
-        ("server", "Server", "monitor.svg"),
+        ("server", "Network", "monitor.svg"),
     )
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -100,6 +113,10 @@ class SettingsPage(QWidget):
         self._nav_buttons: dict[str, QToolButton] = {}
         self._card_values: dict[str, QLabel] = {}
         self._last_sync_label: QLabel | None = None
+        self._server_eth_ips_layout: QVBoxLayout | None = None
+        self._server_alert_frame: QFrame | None = None
+        self._server_alert_title: QLabel | None = None
+        self._server_alert_body: QLabel | None = None
 
         self._init_fields()
         self._build_ui()
@@ -137,9 +154,8 @@ class SettingsPage(QWidget):
         self.repeated_cars = self._make_spinbox(0, 99_999)
         self.repeated_in_time = self._make_spinbox(0, 99_999)
 
-        self.server_interface_select = QComboBox()
-        self.server_interface_select.addItem("Select interface", "")
-        self.server_interface_select.currentIndexChanged.connect(self._on_server_interface_changed)
+        self.server_interface_select = PrimeSelect(placeholder="Select interface")
+        self.server_interface_select.value_changed.connect(self._on_server_interface_changed)
         self.server_ip_address = self._make_line_edit("192.168.1.10")
         self.server_subnet_mask = self._make_line_edit("255.255.255.0")
         self.server_gateway = self._make_line_edit("192.168.1.1")
@@ -356,6 +372,63 @@ class SettingsPage(QWidget):
                 font-size: 12px;
                 line-height: 1.45em;
             }}
+            QFrame#settingsInlineAlert {{
+                background: rgba(71, 12, 17, 0.95);
+                border: 1px solid #c2414d;
+                border-radius: 16px;
+            }}
+            QLabel#settingsInlineAlertIcon {{
+                background: rgba(220, 38, 38, 0.16);
+                border: 1px solid rgba(248, 113, 113, 0.42);
+                border-radius: 14px;
+                color: #fecaca;
+                font-size: 16px;
+                font-weight: 800;
+            }}
+            QLabel#settingsInlineAlertTitle {{
+                color: #fee2e2;
+                font-size: 16px;
+                font-weight: 800;
+            }}
+            QLabel#settingsInlineAlertBody {{
+                color: #fca5a5;
+                font-size: 12px;
+                line-height: 1.45em;
+            }}
+            QToolButton#settingsInlineAlertClose {{
+                background: transparent;
+                border: 1px solid transparent;
+                border-radius: 14px;
+                color: #fecaca;
+                min-width: 28px;
+                min-height: 28px;
+                padding: 0;
+                font-size: 18px;
+                font-weight: 700;
+            }}
+            QToolButton#settingsInlineAlertClose:hover {{
+                background: rgba(255, 255, 255, 0.05);
+                border-color: rgba(248, 113, 113, 0.28);
+            }}
+            QFrame#settingsServerIpRow {{
+                background: #202734;
+                border: 1px solid #324050;
+                border-radius: 12px;
+            }}
+            QLabel#settingsServerIpTitle {{
+                color: #f8fafc;
+                font-size: 13px;
+                font-weight: 700;
+            }}
+            QLabel#settingsServerIpMeta {{
+                color: #8fa0b8;
+                font-size: 11px;
+            }}
+            QLabel#settingsServerIpValue {{
+                color: #7dd3fc;
+                font-size: 15px;
+                font-weight: 700;
+            }}
             QLineEdit, QSpinBox, QComboBox, QDateEdit {{
                 background: #202734;
                 border: 1px solid #324050;
@@ -479,7 +552,7 @@ class SettingsPage(QWidget):
             ("Open Record", "danger", "record"),
             ("Open Alarm", "warning", "alarm"),
             ("Open Repeated", "help", "repeated"),
-            ("Open Server", "info", "server"),
+            ("Open Network", "info", "server"),
         ):
             btn = PrimeButton(label, variant=variant, size="sm")
             btn.clicked.connect(lambda checked=False, value=tab_id: self._set_active_tab(value))
@@ -687,9 +760,56 @@ class SettingsPage(QWidget):
         controls.addWidget(self._server_clear_form_btn)
         layout.addLayout(controls)
 
+        self._server_alert_frame = QFrame()
+        self._server_alert_frame.setObjectName("settingsInlineAlert")
+        self._server_alert_frame.setVisible(False)
+        alert_layout = QHBoxLayout(self._server_alert_frame)
+        alert_layout.setContentsMargins(16, 14, 16, 14)
+        alert_layout.setSpacing(12)
+
+        alert_icon = QLabel("!")
+        alert_icon.setObjectName("settingsInlineAlertIcon")
+        alert_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        alert_icon.setFixedSize(28, 28)
+        alert_layout.addWidget(alert_icon, 0, Qt.AlignmentFlag.AlignTop)
+
+        alert_text = QVBoxLayout()
+        alert_text.setContentsMargins(0, 0, 0, 0)
+        alert_text.setSpacing(6)
+        alert_layout.addLayout(alert_text, 1)
+
+        self._server_alert_title = QLabel("Server Settings")
+        self._server_alert_title.setObjectName("settingsInlineAlertTitle")
+        alert_text.addWidget(self._server_alert_title)
+
+        self._server_alert_body = QLabel("")
+        self._server_alert_body.setObjectName("settingsInlineAlertBody")
+        self._server_alert_body.setWordWrap(True)
+        alert_text.addWidget(self._server_alert_body)
+
+        alert_close = QToolButton()
+        alert_close.setObjectName("settingsInlineAlertClose")
+        alert_close.setCursor(Qt.CursorShape.PointingHandCursor)
+        alert_close.setToolTip("Dismiss")
+        alert_close.setText("x")
+        alert_close.clicked.connect(self._hide_server_alert)
+        alert_layout.addWidget(alert_close, 0, Qt.AlignmentFlag.AlignTop)
+
+        layout.addWidget(self._server_alert_frame)
+
+        available_ips_panel = self._form_panel(
+            "Available Ethernet IPs",
+            "Detected IP addresses for Ethernet interfaces are shown here so you can see what is already assigned before changing network settings.",
+        )
+        self._server_eth_ips_layout = QVBoxLayout()
+        self._server_eth_ips_layout.setContentsMargins(0, 0, 0, 0)
+        self._server_eth_ips_layout.setSpacing(10)
+        available_ips_panel.layout().addLayout(self._server_eth_ips_layout)
+        layout.addWidget(available_ips_panel)
+
         network_panel = self._form_panel(
             "Network Write Actions",
-            "Select an interface from the server response, then send the common network fields needed by the write endpoints.",
+            "Select an interface from the server response, then switch between DHCP and manual IP actions from the same form.",
         )
         network_grid = QGridLayout()
         network_grid.setHorizontalSpacing(12)
@@ -729,6 +849,9 @@ class SettingsPage(QWidget):
         network_actions = QHBoxLayout()
         network_actions.setSpacing(10)
         network_panel.layout().addLayout(network_actions)
+        self._server_enable_dhcp_btn = PrimeButton("Enable DHCP", variant="info", size="sm")
+        self._server_enable_dhcp_btn.clicked.connect(self._enable_dhcp)
+        network_actions.addWidget(self._server_enable_dhcp_btn)
         self._server_set_static_btn = PrimeButton("Set Static IP", variant="warning", size="sm")
         self._server_set_static_btn.clicked.connect(self._set_static_ip)
         network_actions.addWidget(self._server_set_static_btn)
@@ -748,10 +871,10 @@ class SettingsPage(QWidget):
         system_actions = QHBoxLayout()
         system_actions.setSpacing(10)
         system_panel.layout().addLayout(system_actions)
-        self._server_reboot_btn = PrimeButton("Reboot Computer", variant="warning", size="sm")
+        self._server_reboot_btn = PrimeButton("Reboot", variant="warning", size="sm")
         self._server_reboot_btn.clicked.connect(self._reboot_system)
         system_actions.addWidget(self._server_reboot_btn)
-        self._server_shutdown_btn = PrimeButton("Shutdown Computer", variant="danger", size="sm")
+        self._server_shutdown_btn = PrimeButton("Shutdown", variant="danger", size="sm")
         self._server_shutdown_btn.clicked.connect(self._shutdown_system)
         system_actions.addWidget(self._server_shutdown_btn)
         self._server_cancel_shutdown_btn = PrimeButton("Cancel Shutdown", variant="secondary", size="sm")
@@ -759,6 +882,8 @@ class SettingsPage(QWidget):
         system_actions.addWidget(self._server_cancel_shutdown_btn)
         system_actions.addStretch(1)
         layout.addWidget(system_panel)
+
+        self._refresh_available_ethernet_ips()
         
         return page
 
@@ -771,29 +896,25 @@ class SettingsPage(QWidget):
         scroll.setWidget(page)
         return scroll
 
-    def _make_line_edit(self, placeholder: str) -> QLineEdit:
-        field = QLineEdit()
-        field.setPlaceholderText(placeholder)
+    def _make_line_edit(self, placeholder: str) -> PrimeInput:
+        field = PrimeInput(placeholder_text=placeholder)
         return field
 
-    def _make_spinbox(self, minimum: int, maximum: int) -> QSpinBox:
-        field = QSpinBox()
-        field.setRange(minimum, maximum)
-        field.setButtonSymbols(QSpinBox.ButtonSymbols.PlusMinus)
+    def _make_spinbox(self, minimum: int, maximum: int) -> IntegerField:
+        return IntegerField(minimum, maximum)
+
+    def _make_combo(self, options: tuple[tuple[str, object], ...]) -> PrimeSelect:
+        normalized = [{"label": label, "value": value} for label, value in options]
+        field = PrimeSelect(normalized, placeholder=normalized[0]["label"] if normalized else "Select")
+        if normalized:
+            field.set_value(normalized[0]["value"])
         return field
 
-    def _make_combo(self, options: tuple[tuple[str, object], ...]) -> QComboBox:
-        field = QComboBox()
-        for label, value in options:
-            field.addItem(label, value)
-        return field
-
-    def _make_bool_combo(self) -> QComboBox:
+    def _make_bool_combo(self) -> PrimeSelect:
         return self._make_combo((("Yes", True), ("No", False)))
 
-    def _set_combo_value(self, field: QComboBox, value: object) -> None:
-        index = field.findData(value)
-        field.setCurrentIndex(index if index >= 0 else 0)
+    def _set_combo_value(self, field: PrimeSelect, value: object) -> None:
+        field.set_value(value)
 
     def _hero_card(
         self,
@@ -968,7 +1089,7 @@ class SettingsPage(QWidget):
         visit(value)
         return options
 
-    def _on_server_interface_changed(self, _index: int) -> None:
+    def _on_server_interface_changed(self, _value: object = None) -> None:
         self._sync_server_form_from_selected_interface()
         self._fill_record_media_server_ip_from_current_server()
 
@@ -1003,6 +1124,55 @@ class SettingsPage(QWidget):
             return ", ".join(deduped)
         return str(value).strip()
 
+    def _network_mode_text(self, value: Any) -> str:
+        if isinstance(value, bool):
+            return "DHCP" if value else "Static"
+        normalized = str(value or "").strip().lower()
+        if not normalized:
+            return ""
+        if normalized in {"dhcp", "auto", "automatic", "dynamic"}:
+            return "DHCP"
+        if normalized in {"manual", "static", "fixed"}:
+            return "Static"
+        if "dhcp" in normalized:
+            return "DHCP"
+        if "static" in normalized or "manual" in normalized:
+            return "Static"
+        return ""
+
+    def _network_mode_from_item(self, item: dict[str, Any], ipv4: dict[str, Any]) -> str:
+        for key in (
+            "assignment_mode",
+            "addressing",
+            "ip_mode",
+            "mode",
+            "method",
+            "ipv4_method",
+            "bootproto",
+        ):
+            mode_text = self._network_mode_text(item.get(key))
+            if mode_text:
+                return mode_text
+            mode_text = self._network_mode_text(ipv4.get(key))
+            if mode_text:
+                return mode_text
+
+        for key in (
+            "dhcp",
+            "is_dhcp",
+            "dhcp_enabled",
+            "enable_dhcp",
+            "use_dhcp",
+            "ipv4_dhcp",
+        ):
+            mode_text = self._network_mode_text(item.get(key))
+            if mode_text:
+                return mode_text
+            mode_text = self._network_mode_text(ipv4.get(key))
+            if mode_text:
+                return mode_text
+        return ""
+
     def _network_snapshot_from_item(
         self,
         item: dict[str, Any],
@@ -1019,6 +1189,7 @@ class SettingsPage(QWidget):
 
         ipv4_value = item.get("ipv4")
         ipv4 = ipv4_value if isinstance(ipv4_value, dict) else {}
+        assignment_mode = self._network_mode_from_item(item, ipv4)
 
         ip_address = str(
             item.get("ip_address")
@@ -1078,6 +1249,7 @@ class SettingsPage(QWidget):
             "gateway": gateway,
             "prefix_length": prefix_length,
             "dns": dns,
+            "assignment_mode": assignment_mode,
             "state": state,
         }
 
@@ -1092,13 +1264,31 @@ class SettingsPage(QWidget):
         def add_snapshot(snapshot: dict[str, str]) -> None:
             has_data = any(
                 snapshot.get(key, "")
-                for key in ("interface", "ip_address", "subnet_mask", "gateway", "prefix_length", "dns", "state")
+                for key in (
+                    "interface",
+                    "ip_address",
+                    "subnet_mask",
+                    "gateway",
+                    "prefix_length",
+                    "dns",
+                    "assignment_mode",
+                    "state",
+                )
             )
             if not has_data:
                 return
             key = "|".join(
                 snapshot.get(part, "")
-                for part in ("interface", "ip_address", "subnet_mask", "gateway", "prefix_length", "dns", "state")
+                for part in (
+                    "interface",
+                    "ip_address",
+                    "subnet_mask",
+                    "gateway",
+                    "prefix_length",
+                    "dns",
+                    "assignment_mode",
+                    "state",
+                )
             )
             if key in seen_keys:
                 return
@@ -1129,7 +1319,7 @@ class SettingsPage(QWidget):
     def _snapshot_score(self, snapshot: dict[str, str]) -> int:
         return sum(
             1
-            for key in ("ip_address", "subnet_mask", "gateway", "prefix_length", "dns", "state")
+            for key in ("ip_address", "subnet_mask", "gateway", "prefix_length", "dns", "assignment_mode", "state")
             if snapshot.get(key, "").strip()
         )
 
@@ -1163,6 +1353,136 @@ class SettingsPage(QWidget):
                 result.add(interface_name)
         return result
 
+    def _known_interface_names(self) -> set[str]:
+        result: set[str] = set()
+        for label, value in self._interface_options_from_value(self.store.network_interfaces):
+            interface_name = str(value or "").strip()
+            if interface_name:
+                result.add(interface_name)
+        for label, value in self._interface_options_from_value(self.store.network_ips):
+            interface_name = str(value or "").strip()
+            if interface_name:
+                result.add(interface_name)
+        for snapshot in self._merged_network_snapshots():
+            interface_name = str(snapshot.get("interface", "")).strip()
+            if interface_name:
+                result.add(interface_name)
+        return result
+
+    def _is_ethernet_interface(self, interface_name: str) -> bool:
+        name = str(interface_name or "").strip().lower()
+        if not name:
+            return False
+        return name.startswith(("eth", "eno", "ens", "enp", "em", "en")) or "ethernet" in name
+
+    def _available_ethernet_snapshots(self) -> list[dict[str, str]]:
+        merged_by_interface = {
+            str(snapshot.get("interface", "")).strip(): snapshot
+            for snapshot in self._merged_network_snapshots()
+            if str(snapshot.get("interface", "")).strip()
+        }
+        snapshots: list[dict[str, str]] = []
+        for snapshot in self._network_snapshots_from_value(self.store.network_ips):
+            interface_name = str(snapshot.get("interface", "")).strip()
+            ip_address = str(snapshot.get("ip_address", "")).strip()
+            if not self._is_ethernet_interface(interface_name) or not ip_address:
+                continue
+            completed = dict(snapshot)
+            fallback = merged_by_interface.get(interface_name)
+            if fallback is not None:
+                for key in ("subnet_mask", "gateway", "prefix_length", "dns", "assignment_mode", "state"):
+                    if not str(completed.get(key, "")).strip():
+                        completed[key] = fallback.get(key, "")
+            snapshots.append(completed)
+        if not snapshots:
+            snapshots = [
+                snapshot
+                for snapshot in self._merged_network_snapshots()
+                if self._is_ethernet_interface(snapshot.get("interface", ""))
+                and str(snapshot.get("ip_address", "")).strip()
+            ]
+        snapshots.sort(
+            key=lambda snapshot: (
+                not self._snapshot_is_active(snapshot),
+                str(snapshot.get("interface", "")).strip().lower(),
+                str(snapshot.get("ip_address", "")).strip(),
+            )
+        )
+        return snapshots
+
+    def _clear_dynamic_layout(self, layout) -> None:
+        if layout is None:
+            return
+        while layout.count():
+            item = layout.takeAt(0)
+            child_widget = item.widget()
+            child_layout = item.layout()
+            if child_layout is not None:
+                self._clear_dynamic_layout(child_layout)
+            if child_widget is not None:
+                child_widget.deleteLater()
+
+    def _available_ethernet_ip_row(self, snapshot: dict[str, str]) -> QFrame:
+        row = QFrame()
+        row.setObjectName("settingsServerIpRow")
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(12)
+
+        info_layout = QVBoxLayout()
+        info_layout.setContentsMargins(0, 0, 0, 0)
+        info_layout.setSpacing(4)
+        layout.addLayout(info_layout, 1)
+
+        title = QLabel(snapshot.get("interface", "") or "Ethernet")
+        title.setObjectName("settingsServerIpTitle")
+        info_layout.addWidget(title)
+
+        meta_parts: list[str] = []
+        assignment_mode = str(snapshot.get("assignment_mode", "")).strip()
+        subnet_mask = str(snapshot.get("subnet_mask", "")).strip()
+        prefix_length = str(snapshot.get("prefix_length", "")).strip()
+        gateway = str(snapshot.get("gateway", "")).strip()
+        state = str(snapshot.get("state", "")).strip()
+        if assignment_mode:
+            meta_parts.append(assignment_mode)
+        if subnet_mask:
+            meta_parts.append(f"Mask {subnet_mask}")
+        elif prefix_length:
+            meta_parts.append(f"Prefix /{prefix_length}")
+        if gateway:
+            meta_parts.append(f"GW {gateway}")
+        if state:
+            meta_parts.append(f"State {state}")
+        meta = QLabel(" | ".join(meta_parts) or "Ethernet interface")
+        meta.setObjectName("settingsServerIpMeta")
+        meta.setWordWrap(True)
+        info_layout.addWidget(meta)
+
+        value = QLabel(snapshot.get("ip_address", ""))
+        value.setObjectName("settingsServerIpValue")
+        value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(value, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        return row
+
+    def _refresh_available_ethernet_ips(self) -> None:
+        if self._server_eth_ips_layout is None:
+            return
+        self._clear_dynamic_layout(self._server_eth_ips_layout)
+
+        snapshots = self._available_ethernet_snapshots()
+        if not snapshots:
+            empty = QLabel("No Ethernet IPs detected yet. Refresh interfaces to load the current addresses.")
+            empty.setObjectName("settingsPanelSubtitle")
+            empty.setWordWrap(True)
+            self._server_eth_ips_layout.addWidget(empty)
+            return
+
+        for snapshot in snapshots:
+            self._server_eth_ips_layout.addWidget(self._available_ethernet_ip_row(snapshot))
+
     def _validate_interface_for_network_write(self, interface_name: str) -> None:
         allowed = self._interfaces_with_detected_ip()
         if not allowed:
@@ -1175,6 +1495,14 @@ class SettingsPage(QWidget):
                 f"Interface '{interface_name}' is not active. Select '{preferred}' or another active interface."
             )
         raise ValueError(f"Interface '{interface_name}' is not active. Select an active interface.")
+
+    def _validate_interface_exists(self, interface_name: str) -> None:
+        known = self._known_interface_names()
+        if not known:
+            return
+        if interface_name in known:
+            return
+        raise ValueError(f"Interface '{interface_name}' was not found. Refresh interfaces and try again.")
 
     def _merged_network_snapshots(self) -> list[dict[str, str]]:
         merged: list[dict[str, str]] = []
@@ -1192,7 +1520,7 @@ class SettingsPage(QWidget):
         return merged
 
     def _snapshot_for_selected_interface(self) -> dict[str, str] | None:
-        interface_name = str(self.server_interface_select.currentData() or "").strip()
+        interface_name = str(self.server_interface_select.value() or "").strip()
         if not interface_name:
             return None
         needle = interface_name.lower()
@@ -1231,7 +1559,7 @@ class SettingsPage(QWidget):
         self.server_dns.setText(snapshot.get("dns", ""))
 
     def _refresh_server_interface_options(self) -> None:
-        current_value = str(self.server_interface_select.currentData() or "").strip()
+        current_value = str(self.server_interface_select.value() or "").strip()
         options = self._interface_options_from_value(self.store.network_interfaces)
         for label, value in self._interface_options_from_value(self.store.network_ips):
             if any(existing_value == value for _existing_label, existing_value in options):
@@ -1242,42 +1570,52 @@ class SettingsPage(QWidget):
             for snapshot in self._merged_network_snapshots()
             if str(snapshot.get("interface", "")).strip()
         }
-        self.server_interface_select.blockSignals(True)
-        self.server_interface_select.clear()
-        self.server_interface_select.addItem("Select interface", "")
+        select_options: list[dict[str, str]] = []
         for label, value in options:
             display_label = str(label)
             snapshot = snapshots_by_interface.get(str(value).strip())
             if snapshot is not None:
                 ip_text = str(snapshot.get("ip_address", "")).strip()
+                mode_text = str(snapshot.get("assignment_mode", "")).strip()
                 state_text = str(snapshot.get("state", "")).strip()
-                extras = [part for part in (ip_text, state_text) if part]
+                extras: list[str] = []
+                if mode_text:
+                    extras.append(mode_text)
+                if ip_text:
+                    extras.append(ip_text)
+                else:
+                    extras.append("IP not set")
+                if state_text:
+                    extras.append(state_text)
                 if extras:
                     display_label = f"{display_label} ({' | '.join(extras)})"
-            self.server_interface_select.addItem(display_label, value)
-        selected_index = self.server_interface_select.findData(current_value)
+            select_options.append({"label": display_label, "value": value})
+        self.server_interface_select.blockSignals(True)
+        self.server_interface_select.set_options(select_options)
+        selected_value = current_value if any(str(option["value"]).strip() == current_value for option in select_options) else ""
         preferred_interface = self._preferred_interface_name()
         if preferred_interface:
             current_has_snapshot = bool(current_value and current_value in snapshots_by_interface)
-            if selected_index < 0 or not current_has_snapshot:
-                preferred_index = self.server_interface_select.findData(preferred_interface)
-                if preferred_index >= 0:
-                    selected_index = preferred_index
-        self.server_interface_select.setCurrentIndex(selected_index if selected_index >= 0 else 0)
+            if not selected_value or not current_has_snapshot:
+                if any(str(option["value"]).strip() == preferred_interface for option in select_options):
+                    selected_value = preferred_interface
+        self.server_interface_select.set_value(selected_value or None)
         self.server_interface_select.blockSignals(False)
         self._sync_server_form_from_selected_interface()
+        self._refresh_available_ethernet_ips()
 
     def _clear_server_form(self) -> None:
-        self.server_interface_select.setCurrentIndex(0)
+        self.server_interface_select.set_value(None)
         self.server_ip_address.clear()
         self.server_subnet_mask.clear()
         self.server_gateway.clear()
         self.server_prefix_length.clear()
         self.server_dns.clear()
+        self._hide_server_alert()
 
     def _server_network_payload(self, require_interface_name: bool = False) -> dict[str, Any]:
         payload: dict[str, Any] = {}
-        interface_name = str(self.server_interface_select.currentData() or "").strip()
+        interface_name = str(self.server_interface_select.value() or "").strip()
         if interface_name:
             if require_interface_name:
                 self._validate_interface_for_network_write(interface_name)
@@ -1311,10 +1649,27 @@ class SettingsPage(QWidget):
             raise ValueError("Select an interface or fill the network fields.")
         return payload
 
-    def _server_set_static_ip_payload(self) -> dict[str, Any]:
-        interface_name = str(self.server_interface_select.currentData() or "").strip()
+    def _server_enable_dhcp_payload(self) -> dict[str, Any]:
+        interface_name = str(self.server_interface_select.value() or "").strip()
         if not interface_name:
             raise ValueError("Interface name required.")
+        self._validate_interface_exists(interface_name)
+        return {
+            "interface_name": interface_name,
+            "interface": interface_name,
+        }
+
+    def _server_set_static_ip_payload(self) -> dict[str, Any]:
+        interface_name = str(self.server_interface_select.value() or "").strip()
+        if not interface_name:
+            raise ValueError("Interface name required.")
+        self._validate_interface_exists(interface_name)
+
+        snapshot = self._snapshot_for_selected_interface()
+        if snapshot is not None and not str(snapshot.get("ip_address", "")).strip():
+            raise ValueError(
+                f"Interface '{interface_name}' has no detected IP. Use 'Add IP' for the first address."
+            )
         self._validate_interface_for_network_write(interface_name)
 
         ip_address = self.server_ip_address.text().strip()
@@ -1367,6 +1722,61 @@ class SettingsPage(QWidget):
     def _toast_error(self, summary: str, detail: str = "", life: int = 4200) -> None:
         self.toast.error(summary, detail, life)
 
+    def _show_server_alert(self, title: str, detail: str) -> None:
+        if self._server_alert_frame is None or self._server_alert_title is None or self._server_alert_body is None:
+            return
+        self._server_alert_title.setText(title or "Server Settings")
+        self._server_alert_body.setText(detail or "")
+        self._server_alert_frame.setVisible(bool(title or detail))
+
+    def _hide_server_alert(self) -> None:
+        if self._server_alert_frame is not None:
+            self._server_alert_frame.hide()
+
+    def _network_action_error_detail(self, raw_error: str, action: str) -> str:
+        text = str(raw_error or "").strip()
+        if not text:
+            defaults = {
+                "enable_dhcp": "Failed to enable DHCP.",
+                "set_static": "Failed to set static IP.",
+                "add_ip": "Failed to add IP address.",
+                "remove_ip": "Failed to remove IP address.",
+            }
+            return defaults.get(action, "Network action failed.")
+
+        detail = text
+        json_match = re.search(r"(\{.*\})", text)
+        if json_match:
+            try:
+                payload = json.loads(json_match.group(1))
+                payload_detail = str(payload.get("detail") or payload.get("message") or "").strip()
+                if payload_detail:
+                    detail = payload_detail
+            except Exception:
+                pass
+
+        action_prefixes = {
+            "enable_dhcp": "Failed to enable DHCP:",
+            "set_static": "Failed to set static IP:",
+            "add_ip": "Failed to add IP address:",
+            "remove_ip": "Failed to remove IP address:",
+        }
+        prefix = action_prefixes.get(action, "")
+        if prefix and detail.startswith(prefix):
+            detail = detail[len(prefix):].strip()
+        if detail.startswith("Error:"):
+            detail = detail[len("Error:"):].strip()
+
+        if "Insufficient privileges" in detail:
+            match = re.search(r"connection '([^']+)'", detail)
+            connection_name = match.group(1) if match else "the selected network connection"
+            return (
+                f"The API service does not have permission to modify '{connection_name}'. "
+                "Grant NetworkManager/polkit privileges or run the backend with sufficient rights."
+            )
+
+        return detail or text
+
     def _set_buttons_enabled(self, enabled: bool, *buttons: PrimeButton) -> None:
         for button in buttons:
             button.setEnabled(enabled)
@@ -1375,9 +1785,9 @@ class SettingsPage(QWidget):
         return RecordSetting(
             valid_space=self.record_valid_space.value(),
             save_path=self.record_save_path.text().strip(),
-            quality=str(self.record_quality.currentData() or "normal"),
-            is_remove=bool(self.record_is_remove.currentData()),
-            is_record=bool(self.record_is_record.currentData()),
+            quality=str(self.record_quality.value() or "normal"),
+            is_remove=bool(self.record_is_remove.value()),
+            is_record=bool(self.record_is_record.value()),
             fps_delay=self.record_fps_delay.value(),
             media_server_ip=self.record_media_server_ip.text().strip(),
             media_server_port=self.record_media_server_port.value(),
@@ -1393,7 +1803,7 @@ class SettingsPage(QWidget):
         return AlarmSetting(
             blacklist_date=self.alarm_blacklist_date.value(),
             repeated_date=self.alarm_repeated_date.value(),
-            blacklist_alarm=bool(self.alarm_blacklist_alarm.currentData()),
+            blacklist_alarm=bool(self.alarm_blacklist_alarm.value()),
         )
 
     def _repeated_payload(self) -> RepeatedSetting:
@@ -1480,7 +1890,9 @@ class SettingsPage(QWidget):
         interfaces = self.store.load_network_interfaces()
         if interfaces is None:
             if notify:
-                self._toast_error("Server Settings", self.store.last_error or "Failed to load network interfaces.")
+                detail = self.store.last_error or "Failed to load network interfaces."
+                self._show_server_alert("Server Settings", detail)
+                self._toast_error("Server Settings", detail)
             return False
         # Best-effort fetch for current IP assignments used to auto-fill network fields.
         self.store.load_network_ips()
@@ -1518,30 +1930,105 @@ class SettingsPage(QWidget):
             self._toast_error("Server Settings", str(exc))
             return
 
-        self._set_buttons_enabled(False, self._server_set_static_btn, self._server_add_ip_btn, self._server_remove_ip_btn)
+        self._set_buttons_enabled(
+            False,
+            self._server_enable_dhcp_btn,
+            self._server_set_static_btn,
+            self._server_add_ip_btn,
+            self._server_remove_ip_btn,
+        )
         ok = self.store.set_static_ip(payload)
-        self._set_buttons_enabled(True, self._server_set_static_btn, self._server_add_ip_btn, self._server_remove_ip_btn)
+        self._set_buttons_enabled(
+            True,
+            self._server_enable_dhcp_btn,
+            self._server_set_static_btn,
+            self._server_add_ip_btn,
+            self._server_remove_ip_btn,
+        )
         if not ok:
-            self._toast_error("Server Settings", self.store.last_error or "Failed to set static IP.")
+            detail = self._network_action_error_detail(self.store.last_error, "set_static")
+            self._show_server_alert("Server Settings", detail)
+            self._toast_error("Server Settings", detail)
             return
+        self._hide_server_alert()
         self._refresh_server_interface_options()
         self._toast_success("Server Settings", self.store.last_message or "Static IP updated successfully.")
 
     def _add_network_ip(self) -> None:
         try:
-            payload = self._server_network_payload(require_interface_name=True)
+            payload = self._server_network_payload(require_interface_name=False)
         except ValueError as exc:
             self._toast_error("Server Settings", str(exc))
             return
 
-        self._set_buttons_enabled(False, self._server_set_static_btn, self._server_add_ip_btn, self._server_remove_ip_btn)
-        ok = self.store.add_network_ip(payload)
-        self._set_buttons_enabled(True, self._server_set_static_btn, self._server_add_ip_btn, self._server_remove_ip_btn)
-        if not ok:
-            self._toast_error("Server Settings", self.store.last_error or "Failed to add IP address.")
+        interface_name = str(payload.get("interface_name") or payload.get("interface") or "").strip()
+        if not interface_name:
+            self._toast_error("Server Settings", "Interface name required.")
             return
+        try:
+            self._validate_interface_exists(interface_name)
+        except ValueError as exc:
+            self._toast_error("Server Settings", str(exc))
+            return
+
+        self._set_buttons_enabled(
+            False,
+            self._server_enable_dhcp_btn,
+            self._server_set_static_btn,
+            self._server_add_ip_btn,
+            self._server_remove_ip_btn,
+        )
+        ok = self.store.add_network_ip(payload)
+        self._set_buttons_enabled(
+            True,
+            self._server_enable_dhcp_btn,
+            self._server_set_static_btn,
+            self._server_add_ip_btn,
+            self._server_remove_ip_btn,
+        )
+        if not ok:
+            detail = self._network_action_error_detail(self.store.last_error, "add_ip")
+            self._show_server_alert("Server Settings", detail)
+            self._toast_error("Server Settings", detail)
+            return
+        self._hide_server_alert()
         self._refresh_server_interface_options()
         self._toast_success("Server Settings", self.store.last_message or "IP address added successfully.")
+
+    def _enable_dhcp(self) -> None:
+        try:
+            payload = self._server_enable_dhcp_payload()
+        except ValueError as exc:
+            self._toast_error("Server Settings", str(exc))
+            return
+
+        interface_name = str(payload.get("interface_name") or payload.get("interface") or "").strip()
+        if not self._confirm_server_action("Enable DHCP", f"Switch '{interface_name}' to DHCP addressing?"):
+            return
+
+        self._set_buttons_enabled(
+            False,
+            self._server_enable_dhcp_btn,
+            self._server_set_static_btn,
+            self._server_add_ip_btn,
+            self._server_remove_ip_btn,
+        )
+        ok = self.store.enable_dhcp(payload)
+        self._set_buttons_enabled(
+            True,
+            self._server_enable_dhcp_btn,
+            self._server_set_static_btn,
+            self._server_add_ip_btn,
+            self._server_remove_ip_btn,
+        )
+        if not ok:
+            detail = self._network_action_error_detail(self.store.last_error, "enable_dhcp")
+            self._show_server_alert("Server Settings", detail)
+            self._toast_error("Server Settings", detail)
+            return
+        self._hide_server_alert()
+        self._refresh_server_interface_options()
+        self._toast_success("Server Settings", self.store.last_message or f"DHCP enabled for {interface_name}.")
 
     def _remove_network_ip(self) -> None:
         try:
@@ -1550,17 +2037,52 @@ class SettingsPage(QWidget):
             self._toast_error("Server Settings", str(exc))
             return
 
-        self._set_buttons_enabled(False, self._server_set_static_btn, self._server_add_ip_btn, self._server_remove_ip_btn)
-        ok = self.store.remove_network_ip(payload)
-        self._set_buttons_enabled(True, self._server_set_static_btn, self._server_add_ip_btn, self._server_remove_ip_btn)
-        if not ok:
-            self._toast_error("Server Settings", self.store.last_error or "Failed to remove IP address.")
+        interface_name = str(payload.get("interface_name") or payload.get("interface") or "").strip()
+        ip_address = str(payload.get("ip_address") or "").strip()
+        if ip_address and interface_name:
+            target_text = f"IP {ip_address} from {interface_name}"
+        elif ip_address:
+            target_text = f"IP {ip_address}"
+        elif interface_name:
+            target_text = f"the selected IP from {interface_name}"
+        else:
+            target_text = "the selected IP"
+        password = PrimePasswordDialog.get_password(
+            parent=self,
+            title="Remove IP",
+            message=f"Enter your password to remove {target_text}.",
+            ok_text="Remove IP",
+        )
+        if password is None:
             return
+        payload["password"] = password
+
+        self._set_buttons_enabled(
+            False,
+            self._server_enable_dhcp_btn,
+            self._server_set_static_btn,
+            self._server_add_ip_btn,
+            self._server_remove_ip_btn,
+        )
+        ok = self.store.remove_network_ip(payload)
+        self._set_buttons_enabled(
+            True,
+            self._server_enable_dhcp_btn,
+            self._server_set_static_btn,
+            self._server_add_ip_btn,
+            self._server_remove_ip_btn,
+        )
+        if not ok:
+            detail = self._network_action_error_detail(self.store.last_error, "remove_ip")
+            self._show_server_alert("Server Settings", detail)
+            self._toast_error("Server Settings", detail)
+            return
+        self._hide_server_alert()
         self._refresh_server_interface_options()
         self._toast_success("Server Settings", self.store.last_message or "IP address removed successfully.")
 
     def _reboot_system(self) -> None:
-        if not self._confirm_server_action("Reboot Computer", "Send a reboot request to this server?"):
+        if not self._confirm_server_action("Reboot", "Send a reboot request to this server?"):
             return
         self._set_buttons_enabled(False, self._server_reboot_btn)
         ok = self.store.reboot_system()
@@ -1571,7 +2093,7 @@ class SettingsPage(QWidget):
         self._toast_success("Server Settings", self.store.last_message or "Reboot requested successfully.")
 
     def _shutdown_system(self) -> None:
-        if not self._confirm_server_action("Shutdown Computer", "Send a shutdown request to this server?"):
+        if not self._confirm_server_action("Shutdown", "Send a shutdown request to this server?"):
             return
         self._set_buttons_enabled(False, self._server_shutdown_btn)
         ok = self.store.shutdown_system()

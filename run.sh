@@ -1,1 +1,1 @@
-source ~/cityguard/bin/activate && watchfiles "python run.py"
+source cityguard/bin/activate && watchfiles "python run.py"

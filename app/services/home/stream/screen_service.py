@@ -44,6 +44,26 @@ class ScreenService:
             return root
         return default
 
+    def _as_bool(self, value: Any, default: bool = False) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return default
+        if isinstance(value, (int, float)):
+            return bool(value)
+        normalized = str(value).strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+        return default
+
+    def _screen_is_main(self, raw: Dict[str, Any]) -> bool:
+        for key in ("is_main", "main", "is_default", "default"):
+            if key in raw and raw.get(key) is not None:
+                return self._as_bool(raw.get(key), False)
+        return False
+
     def _infer_grid_size_from_cameras(self, cameras: List[ScreenCamera], default: int = 2) -> int:
         if not cameras:
             return default
@@ -135,6 +155,7 @@ class ScreenService:
         return ScreenResponse(
             id=self._as_int(raw.get("id"), fallback_id),
             screen_type=resolved_screen_type,
+            is_main=self._screen_is_main(raw),
             created_at=self._as_datetime(raw.get("created_at") or raw.get("updated_at")),
             cameras=cameras,
         )
@@ -184,6 +205,8 @@ class ScreenService:
 
         normalized = dict(payload)
         normalized["screen_type"] = str(self._as_grid_size(payload.get("screen_type"), 2))
+        if "is_main" in normalized:
+            normalized["is_main"] = self._as_bool(normalized.get("is_main"), False)
         if cameras:
             normalized["cameras"] = cameras
             normalized["camera_ids"] = [item["camera_id"] for item in cameras]

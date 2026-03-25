@@ -53,11 +53,13 @@ from app.ui.dialog import PrimeDialog
 from app.ui.input import PrimeInput
 from app.ui.multiselect import PrimeMultiSelect
 from app.ui.select import PrimeSelect
+from app.ui.sidebar_toggle import SidebarToggleButton
 from app.ui.table import PrimeDataTable, PrimeTableColumn
 from app.ui.toast import PrimeToastHost
 from app.utils.env import resolve_http_base_url
 from app.views.face.whitelist import RemoteImageLabel
 from app.views.lpr.search import ClearableDateTimeField, FilterAccordionSection, SEARCH_TIMEZONE
+from app.views.search_shared import SEARCH_SIDEBAR_STYLES, SearchSidebar
 
 
 _ICONS_DIR = os.path.abspath(
@@ -773,6 +775,10 @@ class FaceSearchPage(QWidget):
         root.setSpacing(12)
         self._root_layout = root
 
+        self.sidebar = SearchSidebar("/search/face", self)
+        self.sidebar.navigate.connect(self.navigate.emit)
+        root.addWidget(self.sidebar, 0)
+
         self.date_from_input = ClearableDateTimeField("Start Time")
         self.date_to_input = ClearableDateTimeField("End Time")
         self._allow_horizontal_shrink(self.date_from_input)
@@ -780,7 +786,7 @@ class FaceSearchPage(QWidget):
 
         self.reference_section = FilterAccordionSection(
             "Reference Face",
-            "Upload a face image to get an embedding and search similar records.",
+            "",
             expanded=True,
             collapsible=False,
         )
@@ -814,10 +820,11 @@ class FaceSearchPage(QWidget):
         self.reference_status.setObjectName("referenceStatus")
         self.reference_status.setWordWrap(True)
         ref_layout.addWidget(self.reference_status)
+        ref_layout.addStretch(1)
 
         self.attributes_section = FilterAccordionSection(
             "Face Attributes",
-            "Refine by gender, age range, colors, and match percentage.",
+            "",
             expanded=True,
             collapsible=False,
         )
@@ -860,10 +867,11 @@ class FaceSearchPage(QWidget):
         self.bottom_color_select = PrimeMultiSelect(COLOR_OPTIONS, placeholder="Select Bottom Colors")
         self._allow_horizontal_shrink(self.bottom_color_select)
         attr_layout.addWidget(self._field_block("Bottom Color", self.bottom_color_select))
+        attr_layout.addStretch(1)
 
         source_section = FilterAccordionSection(
             "Source And Status",
-            "Limit the search to selected cameras or only blacklist or whitelist detections.",
+            "",
             expanded=True,
             collapsible=False,
         )
@@ -881,6 +889,7 @@ class FaceSearchPage(QWidget):
         checks.addWidget(self.blacklist_check)
         checks.addWidget(self.whitelist_check)
         source_layout.addLayout(checks)
+        source_layout.addStretch(1)
 
         self.filters_panel = QFrame()
         self.filters_panel.setObjectName("filtersPanel")
@@ -899,8 +908,9 @@ class FaceSearchPage(QWidget):
         main_layout.setContentsMargins(18, 16, 18, 18)
         main_layout.setSpacing(14)
         root.addWidget(main_panel, 1)
-        root.setStretch(0, 1)
-        root.setStretch(1, 4)
+        root.setStretch(0, 0)
+        root.setStretch(1, 1)
+        root.setStretch(2, 4)
 
         self.hero_scroll = QScrollArea()
         self.hero_scroll.setObjectName("filtersScroll")
@@ -935,20 +945,9 @@ class FaceSearchPage(QWidget):
         hero_title.setWordWrap(True)
         hero_text.addWidget(hero_title)
 
-        hero_hint = QLabel(
-            "Search by time range and face reference. Open advanced filters only when you need to narrow the results."
-        )
-        hero_hint.setObjectName("heroHint")
-        hero_hint.setWordWrap(True)
-        hero_text.addWidget(hero_hint)
-
-        self.filter_state_chip = QLabel("Quick search")
-        self.filter_state_chip.setObjectName("heroChip")
-        hero_head.addWidget(self.filter_state_chip, 0, Qt.AlignmentFlag.AlignLeft)
-
         time_band = FilterAccordionSection(
             "Time Range",
-            "These date pickers control which face records are searched.",
+            "",
             expanded=True,
             collapsible=False,
         )
@@ -957,14 +956,17 @@ class FaceSearchPage(QWidget):
         time_layout.setContentsMargins(0, 0, 0, 0)
         time_layout.setHorizontalSpacing(12)
         time_layout.setVerticalSpacing(10)
+        time_layout.setColumnStretch(0, 1)
+        time_layout.setRowStretch(2, 1)
         time_band.body_layout.addLayout(time_layout)
+        time_band.body_layout.addStretch(1)
         time_layout.addWidget(
-            self._hero_field_block("Start Date & Time", self.date_from_input, "Search from this timestamp."),
+            self._hero_field_block("Start Date & Time", self.date_from_input, ""),
             0,
             0,
         )
         time_layout.addWidget(
-            self._hero_field_block("End Date & Time", self.date_to_input, "Search until this timestamp."),
+            self._hero_field_block("End Date & Time", self.date_to_input, ""),
             1,
             0,
         )
@@ -979,7 +981,7 @@ class FaceSearchPage(QWidget):
         self.reset_btn = PrimeButton("Reset Filters", variant="secondary", mode="outline", size="sm")
         self.reset_btn.clicked.connect(self.reset_filters)
 
-        self.filter_toggle_btn = PrimeButton("All Filters Visible", variant="secondary", mode="outline", size="sm")
+        self.filter_toggle_btn = PrimeButton("Hide Filters", variant="secondary", mode="outline", size="sm")
         self.filter_toggle_btn.clicked.connect(self.toggle_filter_panel)
         self.filter_toggle_btn.hide()
 
@@ -1005,6 +1007,10 @@ class FaceSearchPage(QWidget):
         toolbar.setSpacing(10)
         main_layout.addWidget(toolbar_frame)
 
+        self.results_filter_btn = SidebarToggleButton(self.filters_window_visible, self)
+        self.results_filter_btn.clicked.connect(self.toggle_filters_window)
+        toolbar.addWidget(self.results_filter_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+
         left_cluster = QVBoxLayout()
         left_cluster.setContentsMargins(0, 0, 0, 0)
         left_cluster.setSpacing(3)
@@ -1015,15 +1021,6 @@ class FaceSearchPage(QWidget):
         left_cluster.addWidget(self.page_title)
         left_cluster.addWidget(self.page_summary)
         toolbar.addLayout(left_cluster, 1)
-
-        self.results_filter_btn = PrimeButton(
-            "Hide Sidebar" if self.filters_window_visible else "Show Sidebar",
-            variant="secondary",
-            mode="outline",
-            size="sm",
-        )
-        self.results_filter_btn.clicked.connect(self.toggle_filters_window)
-        toolbar.addWidget(self.results_filter_btn)
 
         self.grid_cols_combo = PrimeSelect(
             options=[{"label": f"{count} Col", "value": count} for count in GRID_OPTIONS],
@@ -1136,7 +1133,8 @@ class FaceSearchPage(QWidget):
 
     def _apply_style(self) -> None:
         self.setStyleSheet(
-            """
+            SEARCH_SIDEBAR_STYLES
+            + """
             QWidget {
                 color: #e2e8f0;
                 font-size: 13px;
@@ -1635,7 +1633,7 @@ class FaceSearchPage(QWidget):
             policy.setHorizontalPolicy(QSizePolicy.Policy.Expanding)
         widget.setSizePolicy(policy)
 
-    def _hero_field_block(self, label_text: str, field: QWidget, hint_text: str) -> QWidget:
+    def _hero_field_block(self, label_text: str, field: QWidget, hint_text: str = "") -> QWidget:
         wrapper = QWidget()
         wrapper.setObjectName("heroFieldBlock")
         layout = QVBoxLayout(wrapper)
@@ -1644,10 +1642,11 @@ class FaceSearchPage(QWidget):
         label = QLabel(label_text)
         label.setObjectName("heroFieldLabel")
         layout.addWidget(label)
-        hint = QLabel(hint_text)
-        hint.setObjectName("heroFieldHint")
-        hint.setWordWrap(True)
-        layout.addWidget(hint)
+        if hint_text:
+            hint = QLabel(hint_text)
+            hint.setObjectName("heroFieldHint")
+            hint.setWordWrap(True)
+            layout.addWidget(hint)
         layout.addWidget(field)
         return wrapper
 
@@ -1687,20 +1686,16 @@ class FaceSearchPage(QWidget):
     def _sync_filter_toggle_ui(self, *_args) -> None:
         if self._filter_sections and all(not section.is_collapsible() for section in self._filter_sections):
             self.filter_panel_open = True
-            self.filter_toggle_btn.setText("All Filters Visible")
-            self.filter_state_chip.setText("All filters visible")
+            self.filter_toggle_btn.setText("Hide Filters")
             return
         open_count = sum(1 for section in self._filter_sections if section.is_expanded())
         self.filter_panel_open = open_count > 0
         if open_count <= 0:
             self.filter_toggle_btn.setText("Show Filters")
-            self.filter_state_chip.setText("Filters collapsed")
         elif open_count >= len(self._filter_sections):
             self.filter_toggle_btn.setText("Hide Filters")
-            self.filter_state_chip.setText("All filters open")
         else:
             self.filter_toggle_btn.setText("Hide Filters")
-            self.filter_state_chip.setText(f"{open_count} sections open")
 
     def _sync_filters_window_ui(self) -> None:
         if hasattr(self, "filters_panel"):
@@ -1709,7 +1704,7 @@ class FaceSearchPage(QWidget):
             self.hero_scroll.setVisible(self.filters_window_visible)
         self._update_filters_scroll_height()
         if hasattr(self, "results_filter_btn"):
-            self.results_filter_btn.setText("Hide Sidebar" if self.filters_window_visible else "Show Sidebar")
+            self.results_filter_btn.sync_visibility(self.filters_window_visible)
 
     def _update_filters_scroll_height(self) -> None:
         if not hasattr(self, "hero_scroll"):
@@ -1777,7 +1772,7 @@ class FaceSearchPage(QWidget):
         self._sync_filters_panel_width(animate=True)
         self._update_filters_scroll_height()
         if hasattr(self, "results_filter_btn"):
-            self.results_filter_btn.setText("Hide Sidebar" if self.filters_window_visible else "Show Sidebar")
+            self.results_filter_btn.sync_visibility(self.filters_window_visible)
 
     def _set_filter_panel_visible(self, visible: bool) -> None:
         for section in self._filter_sections:

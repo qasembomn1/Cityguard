@@ -10,7 +10,6 @@ from typing import Any, Dict, List, Optional
 from app.models.camera import Camera, CameraType
 from app.store.home.devices.camera_store import CameraStore
 from app.store.home.user.department_store import DepartmentStore
-from app.utils.list import extract_dict_list
 from app.store.home.devices.access_control_store import AccessControlStore
 from app.store.home.devices.client_store import ClientStore
 from app.store.home.devices.camera_type_store import CameraTypeStore
@@ -18,9 +17,9 @@ from app.store.auth import AuthStore
 from app.utils.env import resolve_http_base_url
 
 from PySide6.QtCore import QObject, QPointF, Qt, QThread, QTimer, Signal, QSize, QRectF, QUrl
-from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QColor, QFontMetrics, QIcon, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QComboBox,
+    QBoxLayout,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -32,7 +31,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QSizePolicy,
-    QSpinBox,
+    QSplitter,
     QTextEdit,
     QToolButton,
     QVBoxLayout,
@@ -49,7 +48,7 @@ from app.ui.toast import show_toast_message
 from app.constants._init_ import Constants
 try:
     from PySide6.QtWebSockets import QWebSocket
-except Exception:  # pragma: no cover - optional runtime dependency
+except Exception:
     QWebSocket = None
 
 _ICONS_DIR = os.path.abspath(
@@ -192,6 +191,48 @@ class CameraStatusWsClient(QObject):
         payload = message.get("payload")
         if isinstance(payload, dict):
             self.statusUpdate.emit(payload)
+
+
+class _Spinner(QWidget):
+    def __init__(self, size: int = 44, color: str = "#60a5fa", parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._angle = 0
+        self._color = QColor(color)
+        self.setFixedSize(size, size)
+        self._timer = QTimer(self)
+        self._timer.setInterval(80)
+        self._timer.timeout.connect(self._advance)
+
+    def start(self) -> None:
+        if not self._timer.isActive():
+            self._timer.start()
+        self.show()
+        self.update()
+
+    def stop(self) -> None:
+        self._timer.stop()
+        self.hide()
+
+    def _advance(self) -> None:
+        self._angle = (self._angle + 30) % 360
+        self.update()
+
+    def paintEvent(self, event) -> None:  # type: ignore[override]
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.translate(self.rect().center())
+
+        outer_radius = max(8, (min(self.width(), self.height()) // 2) - 2)
+        inner_radius = max(4, outer_radius - 10)
+        steps = 12
+        for index in range(steps):
+            painter.save()
+            painter.rotate(self._angle - (index * (360 / steps)))
+            color = QColor(self._color)
+            color.setAlpha(int(35 + (220 * (steps - index) / steps)))
+            painter.setPen(QPen(color, 3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            painter.drawLine(0, -inner_radius, 0, -outer_radius)
+            painter.restore()
 
 
 class MapDialog(QDialog):
@@ -642,12 +683,12 @@ class CameraRoiDialog(PrimeDialog):
             title=f"ROI Setting - {camera.name}",
             parent=parent,
             width=940,
-            height=820,
+            height=640,
             show_footer=True,
             ok_text="Save ROI",
             cancel_text="Cancel",
         )
-        self.setMinimumSize(900, 760)
+        self.setMinimumWidth(900)
         self.roi_value = str(camera.roi or "")
 
         self.ok_button.clicked.disconnect()
@@ -662,14 +703,15 @@ class CameraRoiDialog(PrimeDialog):
         footer_layout.insertWidget(0, self.status_label, 1)
         footer_layout.insertWidget(2, self.reset_btn)
 
-        hint = QLabel("Click to add points, drag a point to reposition it, then save the normalized ROI.")
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color:#94a3b8; font-size:13px;")
+        self.hint_label = QLabel("Click to add points, drag a point to reposition it, then save the normalized ROI.")
+        self.hint_label.setWordWrap(True)
+        self.hint_label.setStyleSheet("color:#94a3b8; font-size:13px;")
 
-        canvas_frame = QFrame()
-        canvas_frame.setObjectName("roiCanvasFrame")
-        canvas_layout = QVBoxLayout(canvas_frame)
-        canvas_layout.setContentsMargins(12, 12, 12, 12)
+        self.canvas_frame = QFrame()
+        self.canvas_frame.setObjectName("roiCanvasFrame")
+        self.canvas_frame.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        canvas_layout = QVBoxLayout(self.canvas_frame)
+        canvas_layout.setContentsMargins(4, 4, 4, 4)
         canvas_layout.setSpacing(0)
 
         self.canvas = RoiCanvas(self)
@@ -679,13 +721,13 @@ class CameraRoiDialog(PrimeDialog):
         self.reset_btn.clicked.connect(self.canvas.clear_points)
         canvas_layout.addWidget(self.canvas, 0, Qt.AlignmentFlag.AlignCenter)
 
-        content = QWidget()
-        content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(12)
-        content_layout.addWidget(hint)
-        content_layout.addWidget(canvas_frame, 1)
-        self.set_content(content)
+        self.content_widget = QWidget()
+        self.content_body_layout = QVBoxLayout(self.content_widget)
+        self.content_body_layout.setContentsMargins(0, 0, 0, 0)
+        self.content_body_layout.setSpacing(12)
+        self.content_body_layout.addWidget(self.hint_label)
+        self.content_body_layout.addWidget(self.canvas_frame, 0, Qt.AlignmentFlag.AlignHCenter)
+        self.set_content(self.content_widget)
 
         self.setStyleSheet(
             self.styleSheet()
@@ -699,6 +741,20 @@ class CameraRoiDialog(PrimeDialog):
         )
 
         self._update_status()
+        self._fit_to_image_height()
+
+    def _fit_to_image_height(self) -> None:
+        content_margins = self.content_layout.contentsMargins()
+        target_height = (
+            self.header_widget.sizeHint().height()
+            + self.footer_widget.sizeHint().height()
+            + content_margins.top()
+            + content_margins.bottom()
+            + self.hint_label.sizeHint().height()
+            + self.content_body_layout.spacing()
+            + self.canvas_frame.sizeHint().height()
+        )
+        self.set_dialog_size(self._preferred_width, target_height)
 
     def _update_status(self) -> None:
         point_count = len(self.canvas.points())
@@ -1326,6 +1382,9 @@ class CameraFormDialog(PrimeDialog):
         self.access_control_store = access_control_store
         self.camera = camera
         self.is_edit_mode = camera is not None
+        self._default_dialog_size = (1100, 780)
+        self._recorder_dialog_size = (820, 640)
+        self._layout_mode_key: Optional[str] = None
         self.setObjectName("cameraFormDialog")
         self.setStyleSheet(
             self.styleSheet()
@@ -1388,40 +1447,42 @@ class CameraFormDialog(PrimeDialog):
         top_layout.setHorizontalSpacing(12)
         top_layout.setVerticalSpacing(10)
         top_container.addLayout(top_layout)
+        self.top_layout = top_layout
         root.addWidget(top_box)
 
         self.name_edit = PrimeInput()
         self.name_edit.setPlaceholderText("Enter camera name")
         self.ai_combo = self._bool_combo()
         self.process_type_combo = PrimeSelect(
-            options=[
-                {"label": "Face Recognition", "value": "face"},
-                {"label": "License Plate Recognition", "value": "lpr"},
-            ],
+            options=self._process_type_options(),
             placeholder="Select camera type",
         )
-        self.process_type_combo.set_value("lpr")
+        self.process_type_combo.set_value(self._initial_process_type())
         self.process_type_combo.value_changed.connect(lambda _value: self._toggle_type_fields())
 
-        top_layout.addWidget(QLabel("Camera Name *"), 0, 0)
+        self.name_label = QLabel("Camera Name *")
+        self.ai_label = QLabel("AI Support *")
+        self.process_type_label = QLabel("Camera Type *")
+        top_layout.addWidget(self.name_label, 0, 0)
         top_layout.addWidget(self.name_edit, 1, 0)
-        top_layout.addWidget(QLabel("AI Support *"), 0, 1)
+        top_layout.addWidget(self.ai_label, 0, 1)
         top_layout.addWidget(self.ai_combo, 1, 1)
-        top_layout.addWidget(QLabel("Camera Type *"), 0, 2)
+        top_layout.addWidget(self.process_type_label, 0, 2)
         top_layout.addWidget(self.process_type_combo, 1, 2)
 
         body = QHBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(14)
+        self.body_layout = body
         root.addLayout(body, 1)
 
         # Left column
-        left_box, left_container = self._create_section_box("Camera Connection")
+        self.left_box, left_container = self._create_section_box("Camera Connection")
         left_fields = QVBoxLayout()
         left_fields.setContentsMargins(0, 0, 0, 0)
         left_fields.setSpacing(10)
         left_container.addLayout(left_fields)
-        body.addWidget(left_box, 1)
+        body.addWidget(self.left_box, 1)
 
         self.camera_ip_edit = PrimeInput()
         self.camera_ip_edit.setPlaceholderText("Enter camera IP")
@@ -1451,31 +1512,39 @@ class CameraFormDialog(PrimeDialog):
 
         self.door_combo = PrimeSelect(placeholder="Select door")
 
-        left_fields.addWidget(self._field_block("Camera IP *", self.camera_ip_edit))
-        left_fields.addWidget(self._field_block("Camera Port", self.camera_port_spin))
-        left_fields.addWidget(self._field_block("Username", self.camera_username_edit))
-        left_fields.addWidget(self._field_block("Password", self.camera_password_edit))
-        left_fields.addWidget(self._field_block("Camera Brand", self.camera_type_combo))
-        left_fields.addWidget(self._field_block("Access Control", self.access_control_combo))
-        left_fields.addWidget(self._field_block("Door Number", self.door_combo))
+        self.camera_ip_field = self._field_block("Camera IP *", self.camera_ip_edit)
+        self.camera_port_field = self._field_block("Camera Port", self.camera_port_spin)
+        self.camera_username_field = self._field_block("Username", self.camera_username_edit)
+        self.camera_password_field = self._field_block("Password", self.camera_password_edit)
+        self.camera_type_field = self._field_block("Camera Brand", self.camera_type_combo)
+        self.access_control_field = self._field_block("Access Control", self.access_control_combo)
+        self.door_field = self._field_block("Door Number", self.door_combo)
 
-        right_box, right_container = self._create_section_box("Processing & Clients")
+        left_fields.addWidget(self.camera_ip_field)
+        left_fields.addWidget(self.camera_port_field)
+        left_fields.addWidget(self.camera_username_field)
+        left_fields.addWidget(self.camera_password_field)
+        left_fields.addWidget(self.camera_type_field)
+        left_fields.addWidget(self.access_control_field)
+        left_fields.addWidget(self.door_field)
+
+        self.right_box, right_container = self._create_section_box("Processing & Clients")
         right_fields = QVBoxLayout()
         right_fields.setContentsMargins(0, 0, 0, 0)
         right_fields.setSpacing(10)
         right_container.addLayout(right_fields)
-        body.addWidget(right_box, 1)
+        body.addWidget(self.right_box, 1)
 
-        self.client_1_combo = PrimeSelect(placeholder="Select processing client")
-        self.client_2_combo = PrimeSelect(placeholder="Select failover client")
-        self.client_3_combo = PrimeSelect(placeholder="Select recording client")
+        self.client_1_combo = PrimeSelect(placeholder="Select Processing Client")
+        self.client_2_combo = PrimeSelect(placeholder="Select Failover Client")
+        self.client_3_combo = PrimeSelect(placeholder="Select Recording Client")
         self._fill_client_combo(self.client_1_combo, "process")
         self._fill_client_combo(self.client_2_combo, "process")
         self._fill_client_combo(self.client_3_combo, "record")
 
         self.is_process_combo = self._bool_combo()
         self.is_live_combo = self._bool_combo(default=True)
-        self.is_record_combo = self._bool_combo()
+        self.is_record_combo = self._bool_combo(default=True)
         self.is_ptz_combo = self._bool_combo()
         self.forward_stream_combo = self._bool_combo()
         self.fps_delay_spin = PrimeInput(
@@ -1487,15 +1556,25 @@ class CameraFormDialog(PrimeDialog):
             placeholder_text="FPS delay",
         )
 
-        right_fields.addWidget(self._field_block("Processing Client *", self.client_1_combo))
-        right_fields.addWidget(self._field_block("Failover Client", self.client_2_combo))
-        right_fields.addWidget(self._field_block("Recording Client", self.client_3_combo))
-        right_fields.addWidget(self._field_block("Enable Processing", self.is_process_combo))
-        right_fields.addWidget(self._field_block("Enable Live Stream", self.is_live_combo))
-        right_fields.addWidget(self._field_block("Enable Recording", self.is_record_combo))
-        right_fields.addWidget(self._field_block("PTZ", self.is_ptz_combo))
-        right_fields.addWidget(self._field_block("FPS Delay", self.fps_delay_spin))
-        right_fields.addWidget(self._field_block("Forward to Server", self.forward_stream_combo))
+        self.client_1_field = self._field_block("Processing Client *", self.client_1_combo)
+        self.client_2_field = self._field_block("Failover Client", self.client_2_combo)
+        self.client_3_field = self._field_block("Recording Client", self.client_3_combo)
+        self.is_process_field = self._field_block("Enable Processing", self.is_process_combo)
+        self.is_live_field = self._field_block("Enable Live Stream", self.is_live_combo)
+        self.is_record_field = self._field_block("Enable Recording", self.is_record_combo)
+        self.is_ptz_field = self._field_block("Is Support PTZ", self.is_ptz_combo)
+        self.fps_delay_field = self._field_block("FPS Delay", self.fps_delay_spin)
+        self.forward_stream_field = self._field_block("Forward to Server", self.forward_stream_combo)
+
+        right_fields.addWidget(self.client_1_field)
+        right_fields.addWidget(self.client_2_field)
+        right_fields.addWidget(self.client_3_field)
+        right_fields.addWidget(self.is_process_field)
+        right_fields.addWidget(self.is_live_field)
+        right_fields.addWidget(self.is_record_field)
+        right_fields.addWidget(self.is_ptz_field)
+        right_fields.addWidget(self.fps_delay_field)
+        right_fields.addWidget(self.forward_stream_field)
 
         self.face_box, face_container = self._create_section_box("Face Recognition Settings")
         face_grid = QGridLayout()
@@ -1546,6 +1625,8 @@ class CameraFormDialog(PrimeDialog):
 
         if self.camera:
             self._load_camera(self.camera)
+        else:
+            self._set_combo_value(self.client_3_combo, self._default_recorder_client_id())
 
         self._toggle_type_fields()
         self._refresh_doors()
@@ -1576,6 +1657,44 @@ class CameraFormDialog(PrimeDialog):
         layout.addWidget(field)
         return wrapper
 
+    def _process_type_options(self) -> List[Dict[str, str]]:
+        return [
+            {"label": "License Plate Recognition", "value": "lpr"},
+            {"label": "Face Recognition", "value": "face"},
+            {"label": "Recorder Camera", "value": "recorder"},
+        ]
+
+    def _initial_process_type(self) -> str:
+        process_type = str(getattr(self.camera, "process_type", "") or "").strip().lower()
+        if process_type in {"face", "lpr", "recorder"}:
+            return process_type
+        return "lpr"
+
+    def _set_field_label(self, field_block: QWidget, text: str) -> None:
+        label = field_block.findChild(QLabel)
+        if label is not None:
+            label.setText(text)
+
+    def _default_recorder_client_id(self) -> Optional[int]:
+        for item in self.client_store.clients:
+            if (item.type or "").strip().lower() == "record":
+                return item.id
+        current_value = self.client_3_combo.value()
+        if current_value is not None:
+            return current_value
+        for option in self.client_3_combo.options:
+            _label, value = PrimeSelect.normalize_option(option)
+            if value is not None:
+                return value
+        return None
+
+    def _recorder_name(self, camera_ip: str) -> str:
+        if self.camera and self.camera.name.strip():
+            return self.camera.name.strip()
+        if camera_ip:
+            return f"Recorder {camera_ip}"
+        return "Recorder Camera"
+
     def _bool_combo(self, default: bool = False) -> PrimeSelect:
         combo = PrimeSelect(
             options=[
@@ -1598,10 +1717,105 @@ class CameraFormDialog(PrimeDialog):
     def _set_combo_value(self, combo: PrimeSelect, value: Any) -> None:
         combo.set_value(value)
 
+    def _clear_layout_widgets(self, layout: QGridLayout) -> None:
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.hide()
+
+    def _rebuild_top_layout(self, is_recorder: bool) -> None:
+        self._clear_layout_widgets(self.top_layout)
+        for col in range(3):
+            self.top_layout.setColumnStretch(col, 0)
+
+        if is_recorder:
+            placements = [
+                (self.name_label, 0, 0),
+                (self.name_edit, 1, 0),
+                (self.process_type_label, 2, 0),
+                (self.process_type_combo, 3, 0),
+            ]
+            self.top_layout.setColumnStretch(0, 1)
+        else:
+            placements = [
+                (self.name_label, 0, 0),
+                (self.ai_label, 0, 1),
+                (self.process_type_label, 0, 2),
+                (self.name_edit, 1, 0),
+                (self.ai_combo, 1, 1),
+                (self.process_type_combo, 1, 2),
+            ]
+            for col in range(3):
+                self.top_layout.setColumnStretch(col, 1)
+
+        for widget, row, col in placements:
+            widget.show()
+            self.top_layout.addWidget(widget, row, col)
+
+    def _update_dialog_layout_mode(self, is_recorder: bool) -> None:
+        layout_mode = "recorder" if is_recorder else "default"
+        width, height = self._recorder_dialog_size if is_recorder else self._default_dialog_size
+        if self._layout_mode_key == layout_mode:
+            return
+        self._layout_mode_key = layout_mode
+        self._rebuild_top_layout(is_recorder)
+        self.body_layout.setDirection(
+            QBoxLayout.Direction.TopToBottom if is_recorder else QBoxLayout.Direction.LeftToRight
+        )
+        if self.isVisible():
+            self.set_dialog_size(width, height)
+            return
+        self._preferred_width = max(360, width)
+        self._preferred_height = max(220, height)
+
     def _toggle_type_fields(self) -> None:
-        process_type = self.process_type_combo.value()
-        self.face_box.setVisible(process_type == "face")
-        self.countline_btn.setVisible(self.is_edit_mode and process_type == "face")
+        process_type = str(self.process_type_combo.value() or self._initial_process_type()).strip().lower()
+        is_face = process_type == "face"
+        is_recorder = process_type == "recorder"
+        uses_processing_clients = process_type in {"lpr", "face"}
+        shows_recording_client = process_type in {"lpr", "face", "recorder"}
+        self._update_dialog_layout_mode(is_recorder)
+
+        self.name_label.setVisible(True)
+        self.name_edit.setVisible(True)
+        self.ai_label.setVisible(not is_recorder)
+        self.ai_combo.setVisible(not is_recorder)
+        self.access_control_field.setVisible(not is_recorder)
+        self.door_field.setVisible(not is_recorder)
+        self.client_1_field.setVisible(uses_processing_clients)
+        self.client_2_field.setVisible(uses_processing_clients)
+        self.client_3_field.setVisible(shows_recording_client)
+        self.is_process_field.setVisible(uses_processing_clients)
+        self.is_live_field.setVisible(uses_processing_clients)
+        self.is_record_field.setVisible(shows_recording_client)
+        self.is_ptz_field.setVisible(uses_processing_clients)
+        self.fps_delay_field.setVisible(uses_processing_clients)
+        self.forward_stream_field.setVisible(False)
+        self.right_box.setVisible(
+            any(
+                not field.isHidden()
+                for field in (
+                    self.client_1_field,
+                    self.client_2_field,
+                    self.client_3_field,
+                    self.is_process_field,
+                    self.is_live_field,
+                    self.is_record_field,
+                    self.is_ptz_field,
+                    self.fps_delay_field,
+                    self.forward_stream_field,
+                )
+            )
+        )
+        self.face_box.setVisible(is_face)
+        self.roi_btn.setVisible(self.is_edit_mode and not is_recorder)
+        self.countline_btn.setVisible(self.is_edit_mode and is_face)
+
+        self._set_field_label(self.camera_port_field, "Camera Port *" if is_recorder else "Camera Port")
+        self._set_field_label(self.camera_username_field, "Username *" if is_recorder else "Username")
+        self._set_field_label(self.camera_password_field, "Password *" if is_recorder else "Password")
+        self._set_field_label(self.camera_type_field, "Camera Brand *" if is_recorder else "Camera Brand")
 
     def _refresh_doors(self) -> None:
         selected_id = self.access_control_combo.value()
@@ -1630,7 +1844,7 @@ class CameraFormDialog(PrimeDialog):
         try:
             port = int(port_value)
         except (TypeError, ValueError):
-            port = 80
+            port = 554
 
         manufacturer = str(
             item.get("manufacturer")
@@ -1650,7 +1864,7 @@ class CameraFormDialog(PrimeDialog):
 
         return {
             "ip_address": ip_address,
-            "port": max(1, min(port, 65535)),
+            "port": 554 if port <= 0 else max(1, min(port, 65535)),
             "manufacturer": manufacturer,
             "username": username,
             "password": password,
@@ -1731,41 +1945,73 @@ class CameraFormDialog(PrimeDialog):
         self._set_combo_value(self.face_show_rect_combo, cam.face_show_rect)
 
     def _submit(self) -> None:
-        if not self.name_edit.text().strip() or not self.camera_ip_edit.text().strip():
-            show_toast_message(self, "warn", "Validation", "Camera name and camera IP are required.")
+        process_type = str(self.process_type_combo.value() or self._initial_process_type()).strip().lower()
+        is_recorder = process_type == "recorder"
+        current_camera = self.camera
+        camera_ip = self.camera_ip_edit.text().strip()
+        camera_name = self.name_edit.text().strip()
+        camera_username = self.camera_username_edit.text().strip()
+        camera_password = self.camera_password_edit.text()
+        camera_type_id = self.camera_type_combo.value()
+        recorder_client_id = self.client_3_combo.value()
+        if recorder_client_id is None:
+            recorder_client_id = self._default_recorder_client_id()
+
+        if not camera_name or not camera_ip or not camera_username or not camera_password or camera_type_id is None:
+            show_toast_message(
+                self,
+                "warn",
+                "Validation",
+                "Name, camera type, username, password, and camera IP are required.",
+            )
             return
 
         payload = {
-            "name": self.name_edit.text().strip(),
-            "client_id_1": self.client_1_combo.value(),
-            "client_id_2": self.client_2_combo.value(),
-            "client_id_3": self.client_3_combo.value(),
-            "access_control_id": self.access_control_combo.value(),
-            "door_number": self.door_combo.value(),
-            "roi": self.camera.roi if self.camera else "",
+            "name": camera_name,
+            "client_id_1": None if is_recorder else self.client_1_combo.value(),
+            "client_id_2": None if is_recorder else self.client_2_combo.value(),
+            "client_id_3": recorder_client_id,
+            "access_control_id": None if is_recorder else self.access_control_combo.value(),
+            "door_number": None if is_recorder else self.door_combo.value(),
+            "roi": current_camera.roi if current_camera else "",
             "is_record": self.is_record_combo.value(),
-            "is_process": self.is_process_combo.value(),
-            "is_live": self.is_live_combo.value(),
-            "is_ptz": self.is_ptz_combo.value(),
-            "forward_stream": self.forward_stream_combo.value(),
-            "is_ai_cam": self.ai_combo.value(),
-            "fps_delay": int(self.fps_delay_spin.value()),
-            "process_type": self.process_type_combo.value(),
-            "camera_type_id": self.camera_type_combo.value(),
-            "camera_ip": self.camera_ip_edit.text().strip(),
-            "camera_username": self.camera_username_edit.text().strip(),
-            "camera_password": self.camera_password_edit.text(),
+            "is_process": False if is_recorder else self.is_process_combo.value(),
+            "is_live": current_camera.is_live if is_recorder and current_camera else self.is_live_combo.value(),
+            "is_ptz": current_camera.is_ptz if is_recorder and current_camera else self.is_ptz_combo.value(),
+            "forward_stream": current_camera.forward_stream if current_camera else False,
+            "is_ai_cam": False if is_recorder else self.ai_combo.value(),
+            "fps_delay": 0 if is_recorder else int(self.fps_delay_spin.value()),
+            "process_type": process_type,
+            "camera_type_id": camera_type_id,
+            "camera_ip": camera_ip,
+            "camera_username": camera_username,
+            "camera_password": camera_password,
             "camera_port": int(self.camera_port_spin.value()),
             "face_person_count": self.face_person_count_combo.value(),
             "face_color_detection": self.face_color_detection_combo.value(),
             "face_min_size": int(self.face_min_size_spin.value()),
             "face_max_size": int(self.face_max_size_spin.value()),
             "face_show_rect": self.face_show_rect_combo.value(),
-            "face_count_line": self.camera.face_count_line if self.camera else "",
-            "online": self.camera.online if self.camera else False,
+            "face_count_line": current_camera.face_count_line if current_camera else "",
+            "online": current_camera.online if current_camera else False,
         }
-        if self.camera:
-            payload["id"] = self.camera.id
+        if is_recorder:
+            payload.update(
+                {
+                    "client_id_1": None,
+                    "client_id_2": None,
+                    "access_control_id": None,
+                    "door_number": None,
+                    "is_process": False,
+                    "is_ai_cam": False,
+                    "face_person_count": False,
+                    "face_color_detection": False,
+                    "face_show_rect": False,
+                    "face_count_line": "",
+                }
+            )
+        if current_camera:
+            payload["id"] = current_camera.id
         self.submitted.emit(payload, self.is_edit_mode)
         self.accept()
 
@@ -1795,6 +2041,8 @@ class CameraPage(QWidget):
         self._ws_connected = False
         self._ws_camera_online_by_id: Dict[int, bool] = {}
         self._scan_thread: Optional[_ScanThread] = None
+        self._scanned_cameras: List[Dict[str, Any]] = []
+        self._scan_loading = False
         self._status_ws = CameraStatusWsClient(self)
 
         self.camera_store.success.connect(self._show_info)
@@ -1820,8 +2068,8 @@ class CameraPage(QWidget):
         sidebar_layout.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
 
         nav_items = [
-            ("Clients", "user_management.svg", "/device/clients"),
-            ("Cameras", "devices.svg", "/device/cameras"),
+            ("Clients", "client.svg", "/device/clients"),
+            ("Cameras", "camera.svg", "/device/cameras"),
             # ("GPS", "gps.svg", "/device/gps"),
             # ("Bodycam", "bodycam.svg", "/device/body-cam"),
             # ("Access", "activation.svg", "/device/access-control"),
@@ -1851,9 +2099,38 @@ class CameraPage(QWidget):
         main_layout.setSpacing(14)
         root.addWidget(main, 1)
 
+        self.sections_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.sections_splitter.setChildrenCollapsible(False)
+        self.sections_splitter.setHandleWidth(10)
+        main_layout.addWidget(self.sections_splitter, 1)
+
+        self.camera_section = QFrame()
+        self.camera_section.setObjectName("cameraPageSectionPanel")
+        camera_section_layout = QVBoxLayout(self.camera_section)
+        camera_section_layout.setContentsMargins(16, 16, 16, 16)
+        camera_section_layout.setSpacing(12)
+        self.sections_splitter.addWidget(self.camera_section)
+
+        camera_header = QHBoxLayout()
+        camera_header.setContentsMargins(0, 0, 0, 0)
+        camera_header.setSpacing(10)
+        camera_section_layout.addLayout(camera_header)
+
+        camera_title_wrap = QVBoxLayout()
+        camera_title_wrap.setContentsMargins(0, 0, 0, 0)
+        camera_title_wrap.setSpacing(2)
+        self.camera_section_title = QLabel("Cameras")
+        self.camera_section_title.setObjectName("cameraPageSectionTitle")
+        self.camera_section_subtitle = QLabel("Configured cameras and their live connection settings.")
+        self.camera_section_subtitle.setObjectName("cameraPageSectionSubtitle")
+        camera_title_wrap.addWidget(self.camera_section_title)
+        camera_title_wrap.addWidget(self.camera_section_subtitle)
+        camera_header.addLayout(camera_title_wrap, 1)
+
         toolbar = QHBoxLayout()
+        toolbar.setContentsMargins(0, 0, 0, 0)
         toolbar.setSpacing(10)
-        main_layout.addLayout(toolbar)
+        camera_section_layout.addLayout(toolbar)
 
         self.new_btn = QPushButton("+ New")
         self.new_btn.setObjectName("cameraNewBtn")
@@ -1867,10 +2144,6 @@ class CameraPage(QWidget):
 
         toolbar.addStretch(1)
 
-        self.scan_btn = PrimeButton("Scan Network", variant="contrast", mode="filled", size="sm",width=100)
-        self.scan_btn.clicked.connect(self._start_scan)
-        toolbar.addWidget(self.scan_btn)
-
         self.search_edit = QLineEdit()
         self.search_edit.setPlaceholderText("Search...")
         self.search_edit.textChanged.connect(self._on_search_changed)
@@ -1878,22 +2151,19 @@ class CameraPage(QWidget):
         self.search_edit.setObjectName("cameraSearchInput")
         toolbar.addWidget(self.search_edit)
 
-        # Table view
         self.table = PrimeDataTable(page_size=20, row_height=58, show_footer=False)
         self.table.set_columns(
             [
-                PrimeTableColumn("name", "Name", width=150),
-                PrimeTableColumn("client", "Clients", width=220),
-                PrimeTableColumn("recorder", "Recorder", width=170),
-                PrimeTableColumn("type", "Type", width=84, alignment=Qt.AlignLeft | Qt.AlignVCenter),
-                PrimeTableColumn("camera_ip", "Camera IP", width=132),
-                PrimeTableColumn("username", "Username", width=120),
-                PrimeTableColumn("password", "Password", sortable=False, searchable=False, width=140),
-                PrimeTableColumn("record", "Record", width=80, alignment=Qt.AlignLeft | Qt.AlignVCenter),
-                PrimeTableColumn("process", "Process", width=86, alignment=Qt.AlignLeft | Qt.AlignVCenter),
-                PrimeTableColumn("live", "Live", width=72, alignment=Qt.AlignLeft | Qt.AlignVCenter),
-                PrimeTableColumn("status", "Status", width=80, alignment=Qt.AlignLeft | Qt.AlignVCenter),
-                PrimeTableColumn("fps_delay", "FPS Delay", width=90, alignment=Qt.AlignLeft | Qt.AlignVCenter),
+                PrimeTableColumn("name", "Name", stretch=True),
+                PrimeTableColumn("recorder", "Recorder", width=200,),
+                PrimeTableColumn("type", "Type", width=112, alignment=Qt.AlignLeft | Qt.AlignVCenter),
+                PrimeTableColumn("camera_ip", "Camera IP", stretch=True),
+                PrimeTableColumn("username", "Username",stretch=True),
+                PrimeTableColumn("password", "Password", sortable=False, searchable=False, stretch=True),
+                PrimeTableColumn("record", "Record", stretch=True, alignment=Qt.AlignLeft | Qt.AlignVCenter),
+                PrimeTableColumn("process", "Process", stretch=True, alignment=Qt.AlignLeft | Qt.AlignVCenter),
+                PrimeTableColumn("live", "Live", stretch=True, alignment=Qt.AlignLeft | Qt.AlignVCenter),
+                PrimeTableColumn("status", "Status", stretch=True, alignment=Qt.AlignLeft | Qt.AlignVCenter),
                 PrimeTableColumn(
                     "actions",
                     "Actions",
@@ -1915,7 +2185,90 @@ class CameraPage(QWidget):
         self.table.set_cell_widget_factory("live", self._live_cell_widget)
         self.table.set_cell_widget_factory("status", self._status_cell_widget)
         self.table.set_cell_widget_factory("actions", lambda row: self._action_widget(row["_camera"]))
-        main_layout.addWidget(self.table, 1)
+        camera_section_layout.addWidget(self.table, 1)
+
+        self.scan_section = QFrame()
+        self.scan_section.setObjectName("cameraPageSectionPanel")
+        scan_section_layout = QVBoxLayout(self.scan_section)
+        scan_section_layout.setContentsMargins(16, 16, 16, 16)
+        scan_section_layout.setSpacing(12)
+        self.sections_splitter.addWidget(self.scan_section)
+
+        scan_header = QHBoxLayout()
+        scan_header.setContentsMargins(0, 0, 0, 0)
+        scan_header.setSpacing(10)
+        scan_section_layout.addLayout(scan_header)
+
+        scan_title_wrap = QVBoxLayout()
+        scan_title_wrap.setContentsMargins(0, 0, 0, 0)
+        scan_title_wrap.setSpacing(2)
+        self.scan_section_title = QLabel("Scanned Cameras")
+        self.scan_section_title.setObjectName("cameraPageSectionTitle")
+        self.scan_section_subtitle = QLabel("Network scan results appear here. Use one row to open the add camera form.")
+        self.scan_section_subtitle.setObjectName("cameraPageSectionSubtitle")
+        scan_title_wrap.addWidget(self.scan_section_title)
+        scan_title_wrap.addWidget(self.scan_section_subtitle)
+        scan_header.addLayout(scan_title_wrap, 1)
+
+        self.scan_count_label = QLabel("No scan results")
+        self.scan_count_label.setObjectName("cameraPageSectionMeta")
+        scan_header.addWidget(self.scan_count_label, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self.scan_btn = PrimeButton("Scan Network", variant="contrast", mode="filled", size="sm", width=100)
+        self.scan_btn.clicked.connect(self._start_scan)
+        scan_header.addWidget(self.scan_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self.scan_search_edit = QLineEdit()
+        self.scan_search_edit.setPlaceholderText("Search scanned cameras...")
+        self.scan_search_edit.textChanged.connect(self._on_scan_search_changed)
+        self.scan_search_edit.setMaximumWidth(280)
+        self.scan_search_edit.setObjectName("cameraSearchInput")
+        scan_header.addWidget(self.scan_search_edit, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self.scan_empty_label = QLabel("Run Scan Network to show discovered cameras here.")
+        self.scan_empty_label.setObjectName("cameraScanEmpty")
+        self.scan_empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        scan_section_layout.addWidget(self.scan_empty_label)
+
+        self.scan_loading_wrap = QWidget()
+        self.scan_loading_wrap.setMinimumHeight(150)
+        scan_loading_layout = QVBoxLayout(self.scan_loading_wrap)
+        scan_loading_layout.setContentsMargins(0, 0, 0, 0)
+        scan_loading_layout.setSpacing(0)
+        scan_loading_layout.addStretch(1)
+        self.scan_spinner = _Spinner(parent=self.scan_loading_wrap)
+        self.scan_spinner.hide()
+        scan_loading_layout.addWidget(self.scan_spinner, 0, Qt.AlignmentFlag.AlignCenter)
+        scan_loading_layout.addStretch(1)
+        scan_section_layout.addWidget(self.scan_loading_wrap, 0, Qt.AlignmentFlag.AlignCenter)
+
+        self.scan_table = PrimeDataTable(page_size=8, page_size_options=[8, 16, 32], row_height=54, show_footer=True)
+        self.scan_table.set_columns(
+            [
+                PrimeTableColumn("ip_address", "IP Address", stretch=True),
+                PrimeTableColumn(
+                    "port",
+                    "Port",
+                    searchable=False,
+                    width=96,
+                    alignment=Qt.AlignmentFlag.AlignCenter,
+                ),
+                PrimeTableColumn("manufacturer", "Manufacturer", stretch=True),
+                PrimeTableColumn(
+                    "action",
+                    "",
+                    sortable=False,
+                    searchable=False,
+                    width=124,
+                    alignment=Qt.AlignmentFlag.AlignCenter,
+                    widget_factory=self._build_scan_use_button,
+                ),
+            ]
+        )
+        scan_section_layout.addWidget(self.scan_table, 1)
+        self.sections_splitter.setStretchFactor(0, 3)
+        self.sections_splitter.setStretchFactor(1, 2)
+        self.sections_splitter.setSizes([460, 260])
 
         self.status_timer = QTimer(self)
         self.status_timer.timeout.connect(self._poll_updates)
@@ -1934,6 +2287,36 @@ class CameraPage(QWidget):
                 background: #1b1c20;
                 border: 1px solid #2e3138;
                 border-radius: 12px;
+            }
+            QFrame#cameraPageSectionPanel {
+                background: #222428;
+                border: 1px solid #2e3138;
+                border-radius: 12px;
+            }
+            QLabel#cameraPageSectionTitle {
+                color: #f5f7fb;
+                font-size: 15px;
+                font-weight: 700;
+            }
+            QLabel#cameraPageSectionSubtitle {
+                color: #8f98a8;
+                font-size: 12px;
+                font-weight: 500;
+            }
+            QLabel#cameraPageSectionMeta {
+                color: #dbe4f3;
+                background: #28303a;
+                border: 1px solid #36404d;
+                border-radius: 9px;
+                padding: 6px 10px;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            QLabel#cameraScanEmpty {
+                color: #8f98a8;
+                font-size: 13px;
+                font-weight: 500;
+                padding: 18px 12px 8px 12px;
             }
             QLabel#cameraSideTitle {
                 color: #e7ebf3;
@@ -2006,9 +2389,19 @@ class CameraPage(QWidget):
                 min-height: 42px;
                 font-size: 17px;
             }
+            QSplitter::handle:vertical {
+                background: #313741;
+                border-radius: 5px;
+                height: 10px;
+                margin: 0 140px;
+            }
+            QSplitter::handle:vertical:hover {
+                background: #46505f;
+            }
             """
         )
 
+        self._set_scan_results([])
         self.refresh()
 
     def has_permission(self, permission: str) -> bool:
@@ -2044,6 +2437,9 @@ class CameraPage(QWidget):
     def _on_search_changed(self, text: str) -> None:
         self.search_text = text
         self.refresh()
+
+    def _on_scan_search_changed(self, text: str) -> None:
+        self.scan_table.set_filter_text(text)
 
     def _camera_status_value(self, cam: Camera) -> bool:
         if not self._ws_connected:
@@ -2116,6 +2512,37 @@ class CameraPage(QWidget):
                 }
             )
         self.table.set_rows(rows)
+
+    def _set_scan_results(self, cameras: List[Dict[str, Any]]) -> None:
+        self._scanned_cameras = list(cameras)
+        self.scan_table.set_rows(self._scanned_cameras)
+        self.scan_table.set_filter_text(self.scan_search_edit.text())
+        self._refresh_scan_panel()
+
+    def _refresh_scan_panel(self) -> None:
+        has_results = bool(self._scanned_cameras)
+        self.scan_loading_wrap.setVisible(self._scan_loading)
+        self.scan_table.setVisible(has_results and not self._scan_loading)
+        self.scan_empty_label.setVisible(not has_results and not self._scan_loading)
+        self.scan_search_edit.setEnabled(has_results and not self._scan_loading)
+        self.scan_btn.setEnabled(not self._scan_loading)
+        self.scan_count_label.setVisible(not self._scan_loading)
+        if self._scan_loading:
+            return
+        if has_results:
+            self.scan_count_label.setText(f"{len(self._scanned_cameras)} found")
+        else:
+            self.scan_count_label.setText("No scan results")
+
+    def _set_scan_loading(self, loading: bool) -> None:
+        if self._scan_loading == loading:
+            return
+        self._scan_loading = loading
+        if loading:
+            self.scan_spinner.start()
+        else:
+            self.scan_spinner.stop()
+        self._refresh_scan_panel()
 
     def _text_action_button(
         self,
@@ -2224,8 +2651,9 @@ class CameraPage(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setAlignment(Qt.AlignCenter)
         chip = QLabel(text)
+        metrics = QFontMetrics(chip.font())
         chip.setAlignment(Qt.AlignCenter)
-        chip.setMinimumWidth(38)
+        chip.setMinimumWidth(max(38, metrics.horizontalAdvance(text) + 22))
         chip.setMinimumHeight(24)
         chip.setMaximumHeight(24)
         chip.setStyleSheet(
@@ -2294,10 +2722,24 @@ class CameraPage(QWidget):
         recorder = row.get("recorder") or {}
         return self._two_line_cell(recorder.get("name") or "Unset", recorder.get("ip") or "")
 
+    def _build_scan_use_button(self, row: Dict[str, Any]) -> QWidget:
+        wrapper = QWidget()
+        layout = QHBoxLayout(wrapper)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        button = PrimeButton("Use", "primary", size="sm")
+        button.setFixedWidth(92)
+        button.clicked.connect(lambda checked=False, current_row=row: self._open_add_with_scan(current_row))
+        layout.addWidget(button, alignment=Qt.AlignmentFlag.AlignCenter)
+        return wrapper
+
     def _type_cell_widget(self, row: Dict[str, Any]) -> QWidget:
         process_type = str(row.get("type") or "lpr").lower()
         if process_type == "face":
             return self._status_chip("Face", Constants.PRIMARY)
+        if process_type == "recorder":
+            return self._status_chip("Recorder", "#475569")
         return self._status_chip("LPR", Constants.SUCCESS)
 
     def _password_cell_widget(self, row: Dict[str, Any]) -> QWidget:
@@ -2481,25 +2923,40 @@ class CameraPage(QWidget):
         CameraTypeManagerDialog(self.camera_type_store, self).exec()
 
     def _start_scan(self) -> None:
-        self.scan_btn.set_loading(True)
+        if self._scan_thread is not None and self._scan_thread.isRunning():
+            return
+        self._set_scan_loading(True)
         self._scan_thread = _ScanThread(self.camera_store.service)
         self._scan_thread.scan_done.connect(self._on_scan_done)
         self._scan_thread.scan_error.connect(self._on_scan_error)
         self._scan_thread.finished.connect(self._scan_thread.deleteLater)
+        self._scan_thread.finished.connect(self._on_scan_finished)
         self._scan_thread.start()
 
     def _on_scan_done(self, cameras: List[Dict[str, Any]]) -> None:
-        self.scan_btn.set_loading(False)
-        if not cameras:
-            show_toast_message(self, "warn", "Scan", "No cameras found on the network.")
+        self._set_scan_loading(False)
+        existing_ips = {
+            str(getattr(camera, "camera_ip", "") or "").strip()
+            for camera in self.department_store.cameras
+            if str(getattr(camera, "camera_ip", "") or "").strip()
+        }
+        filtered_cameras = [
+            camera
+            for camera in cameras
+            if str(camera.get("ip_address") or "").strip() not in existing_ips
+        ]
+        self._set_scan_results(filtered_cameras)
+        if not filtered_cameras:
+            message = "All scanned cameras are already added." if cameras else "No cameras found on the network."
+            show_toast_message(self, "warn", "Scan", message)
             return
-        result_dialog = ScanCameraResultsDialog(cameras, self)
-        if result_dialog.exec() and result_dialog.selected_camera:
-            self._open_add_with_scan(result_dialog.selected_camera)
 
     def _on_scan_error(self, message: str) -> None:
-        self.scan_btn.set_loading(False)
+        self._set_scan_loading(False)
         show_toast_message(self, "error", "Scan Error", message)
+
+    def _on_scan_finished(self) -> None:
+        self._scan_thread = None
 
     def _open_add_with_scan(self, scanned_camera: Dict[str, Any]) -> None:
         self._reload_dialog_dependencies()

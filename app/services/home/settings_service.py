@@ -19,12 +19,13 @@ class SettingsService:
         self,
         attempts: Iterable[tuple[str, str]],
         data: Dict[str, Any] | None = None,
+        params: Dict[str, Any] | None = None,
     ) -> Any:
         attempts_list = list(attempts)
         last_exc: Exception | None = None
         for index, (method, path) in enumerate(attempts_list):
             try:
-                return self.api.request(method, path, data=data, auth=True)
+                return self.api.request(method, path, data=data, params=params, auth=True)
             except Exception as exc:
                 last_exc = exc
                 is_last_attempt = index == len(attempts_list) - 1
@@ -183,13 +184,27 @@ class SettingsService:
         )
         return self._extract_message(response, "IP address added successfully.")
 
+    def enable_dhcp(self, payload: Dict[str, Any]) -> str:
+        response = self._request_with_fallback(
+            (
+                ("POST", "/api/v1/server_settings/network/enable-dhcp"),
+                ("POST", "/api/v1/server_settings/network/enable-dhcp/"),
+                ("POST", "/api/v1/server_settings/network/enable_dhcp"),
+                ("POST", "/api/v1/server_settings/network/enable_dhcp/"),
+                ("POST", "/api/v1/server_settings/network/set-dhcp"),
+                ("POST", "/api/v1/server_settings/network/set-dhcp/"),
+            ),
+            data=dict(payload or {}),
+        )
+        return self._extract_message(response, "DHCP enabled successfully.")
+
     def remove_network_ip(self, payload: Dict[str, Any]) -> str:
         response = self._request_with_fallback(
             (
                 ("DELETE", "/api/v1/server_settings/network/remove-ip"),
                 ("DELETE", "/api/v1/server_settings/network/remove-ip/"),
             ),
-            data=dict(payload or {}),
+            params=dict(payload or {}),
         )
         return self._extract_message(response, "IP address removed successfully.")
 

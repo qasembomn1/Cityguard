@@ -18,7 +18,7 @@ def _icon_path(name: str) -> str:
 
 USER_NAV_ITEMS = [
     ("Profile", "profile.svg", "/user/profile"),
-    ("Users", "user_management.svg", "/user/users"),
+    ("Users", "user_managment.svg", "/user/users"),
     ("Roles", "settings.svg", "/user/roles"),
     ("Department", "home.svg", "/user/department"),
 ]

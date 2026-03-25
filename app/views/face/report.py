@@ -29,6 +29,7 @@ from app.store.home.face.face_report_store import FaceReportStore
 from app.store.home.user.department_store import DepartmentStore as CameraDepartmentStore
 from app.ui.button import PrimeButton
 from app.ui.multiselect import PrimeMultiSelect
+from app.ui.sidebar_toggle import SidebarToggleButton
 from app.ui.table import PrimeDataTable, PrimeTableColumn
 from app.ui.toast import PrimeToastHost
 from app.views.report_shared import REPORT_SIDEBAR_STYLES, ReportSidebar
@@ -152,8 +153,8 @@ class BaseFaceReportPage(QWidget):
         root.setStretch(2, 4)
 
         content = QVBoxLayout(self.content_panel)
-        content.setContentsMargins(18, 18, 18, 18)
-        content.setSpacing(12)
+        content.setContentsMargins(14, 14, 14, 14)
+        content.setSpacing(10)
 
         hero_scroll = QScrollArea()
         hero_scroll.setObjectName("faceReportFiltersScroll")
@@ -169,30 +170,10 @@ class BaseFaceReportPage(QWidget):
         hero_frame.setObjectName("faceReportHero")
         hero_frame.setMinimumWidth(0)
         hero = QVBoxLayout(hero_frame)
-        hero.setContentsMargins(18, 18, 18, 18)
-        hero.setSpacing(14)
+        hero.setContentsMargins(14, 14, 14, 14)
+        hero.setSpacing(10)
         self.hero_frame = hero_frame
         hero_scroll.setWidget(hero_frame)
-
-        hero_head = QVBoxLayout()
-        hero_head.setContentsMargins(0, 0, 0, 0)
-        hero_head.setSpacing(6)
-        hero.addLayout(hero_head)
-
-        hero_text = QVBoxLayout()
-        hero_text.setContentsMargins(0, 0, 0, 0)
-        hero_text.setSpacing(4)
-        hero_head.addLayout(hero_text)
-
-        hero_title = QLabel(self.title_text)
-        hero_title.setObjectName("heroTitle")
-        hero_title.setWordWrap(True)
-        hero_text.addWidget(hero_title)
-
-        hero_hint = QLabel(self.hint_text)
-        hero_hint.setObjectName("heroHint")
-        hero_hint.setWordWrap(True)
-        hero_text.addWidget(hero_hint)
 
         self.date_from_field = ClearableDateTimeField("Start Time")
         self.date_to_field = ClearableDateTimeField("End Time")
@@ -201,10 +182,11 @@ class BaseFaceReportPage(QWidget):
 
         time_band = FilterAccordionSection(
             "Time Range",
-            "These date pickers control which face report records are included.",
+            "",
             expanded=True,
             collapsible=False,
         )
+        time_band.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         time_layout = QGridLayout()
         time_layout.setContentsMargins(0, 0, 0, 0)
         time_layout.setHorizontalSpacing(12)
@@ -215,7 +197,7 @@ class BaseFaceReportPage(QWidget):
             self._hero_field_block(
                 "Start Date & Time",
                 self.date_from_field,
-                "Required field for the report request.",
+                "",
             ),
             0,
             0,
@@ -224,7 +206,7 @@ class BaseFaceReportPage(QWidget):
             self._hero_field_block(
                 "End Date & Time",
                 self.date_to_field,
-                "Required field for the report request.",
+                "",
             ),
             1,
             0,
@@ -236,32 +218,34 @@ class BaseFaceReportPage(QWidget):
 
         source_band = FilterAccordionSection(
             "Source",
-            "Leave the camera list empty to include every available camera.",
+            "",
             expanded=True,
             collapsible=False,
         )
+        source_band.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         source_band.body_layout.addWidget(self._field_block("Camera", self.camera_select))
         hero.addWidget(source_band)
 
         hero_actions = QVBoxLayout()
         hero_actions.setContentsMargins(0, 0, 0, 0)
-        hero_actions.setSpacing(8)
+        hero_actions.setSpacing(6)
         hero.addLayout(hero_actions)
 
-        self.reset_btn = PrimeButton("Reset Filters", variant="secondary", mode="outline", size="sm")
+        self.reset_btn = PrimeButton("Reset Filters", variant="secondary", mode="outline", size="sm", width=132)
         self.reset_btn.clicked.connect(self.reset_filters)
         hero_actions.addWidget(self.reset_btn)
 
-        self.export_btn = PrimeButton("Export CSV", variant="secondary", mode="outline", size="sm")
+        self.export_btn = PrimeButton("Export CSV", variant="secondary", mode="outline", size="sm", width=132)
         self.export_btn.clicked.connect(self.export_csv)
         hero_actions.addWidget(self.export_btn)
 
-        self.search_btn = PrimeButton("Run Report", variant="primary", mode="filled", size="sm")
+        self.search_btn = PrimeButton("Run Report", variant="primary", mode="filled", size="sm", width=132)
         self.search_btn.clicked.connect(self.perform_report)
         hero_actions.addWidget(self.search_btn)
         self._allow_horizontal_shrink(self.reset_btn)
         self._allow_horizontal_shrink(self.export_btn)
         self._allow_horizontal_shrink(self.search_btn)
+        hero.addStretch(1)
 
         toolbar_frame = QFrame()
         toolbar_frame.setObjectName("faceReportToolbar")
@@ -269,6 +253,10 @@ class BaseFaceReportPage(QWidget):
         toolbar.setContentsMargins(14, 14, 14, 14)
         toolbar.setSpacing(10)
         content.addWidget(toolbar_frame)
+
+        self.results_filter_btn = SidebarToggleButton(self.filters_window_visible, self)
+        self.results_filter_btn.clicked.connect(self.toggle_filters_window)
+        toolbar.addWidget(self.results_filter_btn, 0, Qt.AlignmentFlag.AlignVCenter)
 
         title_col = QVBoxLayout()
         title_col.setContentsMargins(0, 0, 0, 0)
@@ -280,15 +268,6 @@ class BaseFaceReportPage(QWidget):
         title_col.addWidget(page_title)
         title_col.addWidget(self.status_label)
         toolbar.addLayout(title_col, 1)
-
-        self.results_filter_btn = PrimeButton(
-            "Hide Sidebar" if self.filters_window_visible else "Show Sidebar",
-            variant="secondary",
-            mode="outline",
-            size="sm",
-        )
-        self.results_filter_btn.clicked.connect(self.toggle_filters_window)
-        toolbar.addWidget(self.results_filter_btn)
 
         self.table = PrimeDataTable(page_size=20, page_size_options=[10, 20, 50, 100], row_height=48, show_footer=True)
         self._set_table_columns([])
@@ -306,10 +285,11 @@ class BaseFaceReportPage(QWidget):
         label.setObjectName("heroFieldLabel")
         layout.addWidget(label)
 
-        hint = QLabel(hint_text)
-        hint.setObjectName("heroFieldHint")
-        hint.setWordWrap(True)
-        layout.addWidget(hint)
+        if hint_text:
+            hint = QLabel(hint_text)
+            hint.setObjectName("heroFieldHint")
+            hint.setWordWrap(True)
+            layout.addWidget(hint)
 
         layout.addWidget(field)
         return wrapper
@@ -355,7 +335,7 @@ class BaseFaceReportPage(QWidget):
             QFrame#faceReportHero {
                 background: #171b22;
                 border: 1px solid #2b3240;
-                border-radius: 22px;
+                border-radius: 18px;
             }
             QFrame#filterAccordion {
                 background: #1f2630;
@@ -645,7 +625,7 @@ class BaseFaceReportPage(QWidget):
             self.hero_scroll.setVisible(self.filters_window_visible)
         self._update_filters_scroll_height()
         if hasattr(self, "results_filter_btn"):
-            self.results_filter_btn.setText("Hide Sidebar" if self.filters_window_visible else "Show Sidebar")
+            self.results_filter_btn.sync_visibility(self.filters_window_visible)
 
     def _update_filters_scroll_height(self) -> None:
         if not hasattr(self, "hero_scroll"):
@@ -663,7 +643,7 @@ class BaseFaceReportPage(QWidget):
             available -= self.sidebar.width() + spacing
         if available <= 0:
             return 0
-        return max(0, min(340, int(available * 0.22)))
+        return max(0, min(300, max(200, int(available * 0.18))))
 
     def _set_filters_panel_width(self, width: int) -> None:
         if not hasattr(self, "filters_panel"):
@@ -715,7 +695,7 @@ class BaseFaceReportPage(QWidget):
         self._sync_filters_panel_width(animate=True)
         self._update_filters_scroll_height()
         if hasattr(self, "results_filter_btn"):
-            self.results_filter_btn.setText("Hide Sidebar" if self.filters_window_visible else "Show Sidebar")
+            self.results_filter_btn.sync_visibility(self.filters_window_visible)
 
     def toggle_filters_window(self) -> None:
         self._set_filters_window_visible(not self.filters_window_visible)

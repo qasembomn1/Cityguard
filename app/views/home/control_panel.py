@@ -114,7 +114,7 @@ CONTROL_PANEL_TABS = [
     # },
     {
         "name": "User Management",
-        "svg_icon": _icon("user_management.svg"),
+        "svg_icon": _icon("user_managment.svg"),
         "permission": ["*", "user", "role", "department"],
         "children": [
             {"name": "Profile",    "path": "/user/profile",    "permission": "*"},

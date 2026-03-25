@@ -11,9 +11,9 @@ from dataclasses import dataclass, field
 from math import isqrt
 from typing import TYPE_CHECKING, Dict, List, Optional
 
-from PySide6.QtCore import QEvent, QMimeData, QObject, QPoint, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QEvent, QMimeData, QObject, QPoint, QRectF, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
-from PySide6.QtGui import QAction, QColor, QDrag, QIcon, QPainter, QPixmap
+from PySide6.QtGui import QAction, QColor, QDrag, QIcon, QPainter, QPainterPath, QPen, QPixmap, QRegion
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from app.models.department import DepartmentResponse
 from app.models.screen import ScreenResponse
 from app.models.lpr.region import plate_region
 from app.services.home.stream.screen_service import ScreenService
@@ -62,6 +63,7 @@ if TYPE_CHECKING:
 class SavedScreenConfig:
     id: int
     screen_type: int
+    is_main: bool = False
     cameras: List[Dict[str, int]] = field(default_factory=list)
 
 
@@ -70,6 +72,7 @@ class SavedScreenConfig:
 # ============================================================
 
 MPV_EMBED_PANSCAN = 1.0
+MAIN_SCREEN_OPTION = "__main_screen__"
 
 MPV_ARGS = [
     "--idle=yes",
@@ -87,9 +90,8 @@ MPV_ARGS = [
     "--input-vo-keyboard=no",
     "--keepaspect=yes",
     "--video-unscaled=no",
-    f"--panscan={MPV_EMBED_PANSCAN}",
+    "--aspect=16:9"
 ]
-
 _ICONS_DIR = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "../../../resources/icons")
 )
@@ -134,6 +136,30 @@ def _allow_horizontal_shrink(widget: QWidget) -> None:
     size_policy = widget.sizePolicy()
     size_policy.setHorizontalPolicy(QSizePolicy.Policy.Ignored)
     widget.setSizePolicy(size_policy)
+
+
+def _apply_sidebar_icon(label: QLabel, icon_name: str, size: int, fallback: str = "") -> None:
+    label.setAlignment(Qt.AlignCenter)
+    icon_file = _icon_path(icon_name)
+    if os.path.isfile(icon_file):
+        label.setPixmap(QIcon(icon_file).pixmap(QSize(size, size)))
+        label.setText("")
+        return
+    label.setPixmap(QPixmap())
+    label.setText(fallback)
+
+
+class RoundedClipFrame(QFrame):
+    def __init__(self, radius: int = 18, parent=None):
+        super().__init__(parent)
+        self._radius = radius
+
+    def resizeEvent(self, event):
+        if self.width() > 0 and self.height() > 0:
+            path = QPainterPath()
+            path.addRoundedRect(QRectF(self.rect()), self._radius, self._radius)
+            self.setMask(QRegion(path.toFillPolygon().toPolygon()))
+        super().resizeEvent(event)
 
 
 def _grid_size_value(value: object, default: int = 2) -> int:
@@ -1117,6 +1143,8 @@ class AccordionHeader(QFrame):
         count_text: str,
         state_text: str,
         state_tone: str,
+        icon_name: str = "client.svg",
+        eyebrow_text: str = "",
         parent=None,
     ):
         super().__init__(parent)
@@ -1128,12 +1156,31 @@ class AccordionHeader(QFrame):
         layout.setContentsMargins(14, 12, 14, 12)
         layout.setSpacing(10)
 
+        icon_card = QFrame(self)
+        icon_card.setObjectName("accordionIconCard")
+        icon_card.setFixedSize(44, 44)
+        icon_layout = QVBoxLayout(icon_card)
+        icon_layout.setContentsMargins(0, 0, 0, 0)
+        icon_layout.setSpacing(0)
+        self.icon_label = QLabel(icon_card)
+        self.icon_label.setObjectName("accordionIcon")
+        _apply_sidebar_icon(self.icon_label, icon_name, 18, fallback="CL")
+        icon_layout.addWidget(self.icon_label, 1, Qt.AlignCenter)
+        layout.addWidget(icon_card, 0, Qt.AlignTop)
+
         text_col = QVBoxLayout()
         text_col.setContentsMargins(0, 0, 0, 0)
         text_col.setSpacing(3)
 
+        self.eyebrow_label = QLabel(eyebrow_text)
+        self.eyebrow_label.setObjectName("cameraSectionEyebrow")
+        self.eyebrow_label.setVisible(bool(eyebrow_text))
+        _allow_horizontal_shrink(self.eyebrow_label)
+        text_col.addWidget(self.eyebrow_label)
+
         self.title_label = QLabel(title)
         self.title_label.setObjectName("cameraSectionTitle")
+        self.title_label.setVisible(bool(title))
         _allow_horizontal_shrink(self.title_label)
         text_col.addWidget(self.title_label)
 
@@ -1162,10 +1209,13 @@ class AccordionHeader(QFrame):
 
         self.chevron = QLabel("▾")
         self.chevron.setObjectName("accordionChevron")
+        self.chevron.setVisible(True)
         right_col.addWidget(self.chevron, 0, Qt.AlignVCenter)
         layout.addLayout(right_col)
 
         for widget in (
+            self.icon_label,
+            self.eyebrow_label,
             self.title_label,
             self.subtitle_label,
             self.count_badge,
@@ -1201,69 +1251,71 @@ class CameraAccordionRow(QFrame):
         self.setCursor(Qt.OpenHandCursor)
 
         root = QHBoxLayout(self)
-        root.setContentsMargins(12, 10, 12, 10)
-        root.setSpacing(10)
+        root.setContentsMargins(9, 7, 9, 7)
+        root.setSpacing(8)
+
+        icon_card = QFrame(self)
+        icon_card.setObjectName("cameraRowIconCard")
+        icon_card.setFixedSize(40, 40)
+        icon_layout = QVBoxLayout(icon_card)
+        icon_layout.setContentsMargins(0, 0, 0, 0)
+        icon_layout.setSpacing(0)
+
+        self.icon_label = QLabel(icon_card)
+        self.icon_label.setObjectName("cameraRowIcon")
+        _apply_sidebar_icon(self.icon_label, "camera.svg", 20, fallback="CAM")
+        icon_layout.addWidget(self.icon_label, 1, Qt.AlignCenter)
+        root.addWidget(icon_card, 0, Qt.AlignVCenter)
 
         text_col = QVBoxLayout()
         text_col.setContentsMargins(0, 0, 0, 0)
-        text_col.setSpacing(5)
-
-        title_row = QHBoxLayout()
-        title_row.setContentsMargins(0, 0, 0, 0)
-        title_row.setSpacing(6)
+        text_col.setSpacing(0)
 
         self.title_label = QLabel(self._camera_name)
         self.title_label.setObjectName("cameraRowTitle")
-        self.title_label.setToolTip(self._camera_name)
-        _allow_horizontal_shrink(self.title_label)
-        title_row.addWidget(self.title_label, 1)
-
-        self.state_badge = QLabel("Online" if getattr(camera, "online", False) else "Offline")
-        self.state_badge.setObjectName("rowStateBadge")
-        self.state_badge.setProperty("tone", "online" if getattr(camera, "online", False) else "offline")
-        title_row.addWidget(self.state_badge, 0, Qt.AlignRight)
-        text_col.addLayout(title_row)
+        self.title_label.setMinimumWidth(0)
+        self.title_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        text_col.addWidget(self.title_label)
 
         self.meta_label = QLabel(self._camera_ip or "No camera IP")
         self.meta_label.setObjectName("cameraRowMeta")
         self.meta_label.setToolTip(self.meta_label.text())
-        _allow_horizontal_shrink(self.meta_label)
+        self.meta_label.setMinimumWidth(0)
+        self.meta_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         text_col.addWidget(self.meta_label)
-
-        info_row = QHBoxLayout()
-        info_row.setContentsMargins(0, 0, 0, 0)
-        info_row.setSpacing(6)
-
-        process_type = str(getattr(camera, "process_type", "") or "lpr").upper()
-        self.process_badge = QLabel(process_type)
-        self.process_badge.setObjectName("cameraMetaBadge")
-        info_row.addWidget(self.process_badge, 0, Qt.AlignLeft)
-
-        streaming = _as_int(getattr(camera, "streaming_fps", 0), 0)
-        processing = _as_int(getattr(camera, "processing_fps", 0), 0)
-        self.fps_badge = QLabel(f"{streaming}/{processing} FPS")
-        self.fps_badge.setObjectName("cameraFpsBadge")
-        info_row.addWidget(self.fps_badge, 0, Qt.AlignLeft)
-
-        info_row.addStretch()
-        self.hint_label = QLabel("Drag to grid or double click to maximize")
-        self.hint_label.setObjectName("cameraDragHint")
-        self.hint_label.setToolTip(self.hint_label.text())
-        _allow_horizontal_shrink(self.hint_label)
-        info_row.addWidget(self.hint_label, 0, Qt.AlignRight)
-        text_col.addLayout(info_row)
 
         root.addLayout(text_col, 1)
 
+        streaming = _as_int(getattr(camera, "streaming_fps", 0), 0)
+        processing = _as_int(getattr(camera, "processing_fps", 0), 0)
+        self.fps_card = QFrame(self)
+        self.fps_card.setObjectName("cameraRowFpsCard")
+        fps_layout = QVBoxLayout(self.fps_card)
+        fps_layout.setContentsMargins(8, 5, 8, 5)
+        fps_layout.setSpacing(0)
+        self.fps_badge = QLabel(f"{streaming}/{processing} FPS")
+        self.fps_badge.setObjectName("cameraRowFpsText")
+        fps_layout.addWidget(self.fps_badge, 0, Qt.AlignCenter)
+        root.addWidget(self.fps_card, 0, Qt.AlignVCenter)
+
+        self.setToolTip(self._build_hover_tooltip())
+
         for widget in (
+            icon_card,
+            self.icon_label,
             self.title_label,
-            self.state_badge,
             self.meta_label,
-            self.process_badge,
+            self.fps_card,
             self.fps_badge,
-            self.hint_label,
         ):
             widget.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+
+    def _build_hover_tooltip(self) -> str:
+        details = [self._camera_name]
+        if self.camera_id > 0:
+            details.append(f"Camera ID: #{self.camera_id}")
+        details.append(f"IP: {self._camera_ip or 'No camera IP'}")
+        return "\n".join(details)
 
     def _start_drag(self) -> None:
         if self.camera_id <= 0:
@@ -1309,6 +1361,21 @@ class CameraAccordionRow(QFrame):
         self.setCursor(Qt.OpenHandCursor)
         super().mouseReleaseEvent(event)
 
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        rect = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        path = QPainterPath()
+        path.addRoundedRect(rect, 14, 14)
+
+        background = QColor("#171b20") if self.underMouse() else QColor("#121518")
+        border = QColor("#58616c") if self.underMouse() else QColor("#434b55")
+
+        painter.fillPath(path, background)
+        painter.setPen(QPen(border, 2))
+        painter.drawPath(path)
+
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.LeftButton and self.camera_id > 0:
             self.activated.emit(self.camera_id)
@@ -1328,12 +1395,13 @@ class CameraAccordionSection(QFrame):
         count_text: str,
         state_text: str,
         state_tone: str,
+        icon_name: str = "client.svg",
+        eyebrow_text: str = "",
         expanded: bool = True,
         parent=None,
     ):
         super().__init__(parent)
         self.key = key
-        self._expanded = expanded
         self.setObjectName("cameraSection")
 
         root = QVBoxLayout(self)
@@ -1346,10 +1414,12 @@ class CameraAccordionSection(QFrame):
             count_text=count_text,
             state_text=state_text,
             state_tone=state_tone,
+            icon_name=icon_name,
+            eyebrow_text=eyebrow_text,
             parent=self,
         )
-        self.header.clicked.connect(self.toggle)
         root.addWidget(self.header)
+        self.header.clicked.connect(self.toggle)
 
         self.body = QFrame()
         self.body.setObjectName("cameraSectionBody")
@@ -1358,17 +1428,19 @@ class CameraAccordionSection(QFrame):
         self.body_layout.setContentsMargins(10, 0, 10, 10)
         self.body_layout.setSpacing(8)
         root.addWidget(self.body)
-        self.set_expanded(expanded)
+        self._expanded = bool(expanded)
+        self.body.setVisible(self._expanded)
+        self.header.set_expanded(self._expanded)
 
     def add_camera_row(self, row: CameraAccordionRow) -> None:
         self.body_layout.addWidget(row)
 
     def set_expanded(self, expanded: bool, emit_signal: bool = False) -> None:
-        self._expanded = expanded
-        self.body.setVisible(expanded)
-        self.header.set_expanded(expanded)
+        self._expanded = bool(expanded)
+        self.body.setVisible(self._expanded)
+        self.header.set_expanded(self._expanded)
         if emit_signal:
-            self.toggled.emit(expanded)
+            self.toggled.emit(self._expanded)
 
     def toggle(self) -> None:
         self.set_expanded(not self._expanded, emit_signal=True)
@@ -1379,14 +1451,13 @@ class DragCameraTree(QScrollArea):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._expanded_sections: Dict[str, bool] = {}
         self.setObjectName("cameraAccordion")
         self.setWidgetResizable(True)
         self.setFrameShape(QFrame.NoFrame)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.setStyleSheet("background: transparent; border: none;")
-        self._expanded_sections: Dict[str, bool] = {}
-
         self.content = QWidget()
         self.content.setObjectName("cameraAccordionContent")
         self.content.setMinimumWidth(0)
@@ -1402,6 +1473,10 @@ class DragCameraTree(QScrollArea):
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
+
+    def _remember_section_state(self, key: str, expanded: bool) -> None:
+        if key:
+            self._expanded_sections[key] = bool(expanded)
 
     def set_sections(self, sections: List[dict], empty_message: str = "No cameras found") -> None:
         self.clear()
@@ -1427,12 +1502,9 @@ class DragCameraTree(QScrollArea):
 
         for section_data in sections:
             key = str(section_data.get("key") or "")
-            default_expanded = bool(section_data.get("expanded", True))
-            if section_data.get("force_expanded"):
-                expanded = default_expanded
-            else:
-                expanded = self._expanded_sections.get(key, default_expanded)
-
+            expanded = bool(section_data.get("expanded", False))
+            if not bool(section_data.get("force_expanded")) and key in self._expanded_sections:
+                expanded = self._expanded_sections[key]
             section = CameraAccordionSection(
                 key=key,
                 title=str(section_data.get("title") or ""),
@@ -1440,9 +1512,11 @@ class DragCameraTree(QScrollArea):
                 count_text=str(section_data.get("count_text") or ""),
                 state_text=str(section_data.get("state_text") or ""),
                 state_tone=str(section_data.get("state_tone") or "neutral"),
+                icon_name=str(section_data.get("icon_name") or "client.svg"),
+                eyebrow_text=str(section_data.get("eyebrow_text") or ""),
                 expanded=expanded,
             )
-            section.toggled.connect(lambda value, section_key=key: self._remember_section_state(section_key, value))
+            section.toggled.connect(lambda is_expanded, section_key=key: self._remember_section_state(section_key, is_expanded))
 
             for camera in section_data.get("cameras", []):
                 row = CameraAccordionRow(camera)
@@ -1452,10 +1526,6 @@ class DragCameraTree(QScrollArea):
             self.content_layout.addWidget(section)
 
         self.content_layout.addStretch()
-
-    def _remember_section_state(self, key: str, expanded: bool) -> None:
-        if key:
-            self._expanded_sections[key] = expanded
 
 
 class GridCell(QFrame):
@@ -1589,6 +1659,15 @@ class GridCell(QFrame):
 
         self.overlay_layout.addStretch(1)
 
+        self.camera_name_label = QLabel("")
+        self.camera_name_label.setObjectName("streamCameraName")
+        self.camera_name_label.setMinimumWidth(0)
+        self.camera_name_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.camera_ip_label = QLabel("")
+        self.camera_ip_label.setObjectName("streamCameraIp")
+        self.camera_ip_label.setMinimumWidth(0)
+        self.camera_ip_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+
         self.fps_label = QLabel("FPS 0 / 0")
         self.fps_label.setObjectName("fpsBadge")
         self.face_label = QLabel("")
@@ -1606,8 +1685,19 @@ class GridCell(QFrame):
         self.bottom_info_layout = QHBoxLayout(self.bottom_info)
         self.bottom_info_layout.setContentsMargins(12, 0, 12, 12)
         self.bottom_info_layout.setSpacing(6)
-        self.bottom_info_layout.addWidget(self.fps_label, 0, Qt.AlignLeft | Qt.AlignBottom)
+
+        self.bottom_meta = QWidget(self.bottom_info)
+        self.bottom_meta.setObjectName("streamBottomMeta")
+        self.bottom_meta.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.bottom_meta_layout = QVBoxLayout(self.bottom_meta)
+        self.bottom_meta_layout.setContentsMargins(0, 0, 0, 0)
+        self.bottom_meta_layout.setSpacing(1)
+        self.bottom_meta_layout.addWidget(self.camera_name_label, 0, Qt.AlignLeft)
+        self.bottom_meta_layout.addWidget(self.camera_ip_label, 0, Qt.AlignLeft)
+
+        self.bottom_info_layout.addWidget(self.bottom_meta, 1, Qt.AlignLeft | Qt.AlignBottom)
         self.bottom_info_layout.addStretch()
+        self.bottom_info_layout.addWidget(self.fps_label, 0, Qt.AlignRight | Qt.AlignBottom)
         self.bottom_info_layout.addWidget(self.face_label, 0, Qt.AlignRight | Qt.AlignBottom)
         self.overlay_layout.addWidget(self.bottom_info, 0)
 
@@ -1631,12 +1721,17 @@ class GridCell(QFrame):
         compact = tile_width <= 240
         self.fps_label.setProperty("compact", compact)
         self.face_label.setProperty("compact", compact)
+        self.camera_name_label.setProperty("compact", compact)
+        self.camera_ip_label.setProperty("compact", compact)
         self.bottom_info_layout.setContentsMargins(14 if compact else 12, 0, 14 if compact else 12, 14 if compact else 12)
         self.bottom_info_layout.setSpacing(4 if compact else 6)
         fps_prefix = "FPS " if not compact else ""
         self.fps_label.setText(f"{fps_prefix}{self._streaming_fps}/{self._processing_fps}")
         self.face_label.setText(self._face_badge_text)
-        for widget in (self.fps_label, self.face_label):
+        self.camera_name_label.setText(self._camera_display_name())
+        self.camera_ip_label.setText(self._camera_display_ip())
+        self.bottom_meta.setVisible(bool(self.camera))
+        for widget in (self.camera_name_label, self.camera_ip_label, self.fps_label, self.face_label):
             widget.style().unpolish(widget)
             widget.style().polish(widget)
 
@@ -1655,7 +1750,25 @@ class GridCell(QFrame):
             return
         self.placeholder_overlay.setGeometry(0, 0, self.video_label.width(), self.video_label.height())
 
-    def _set_placeholder_state(self, title: str, detail: str = "", icon_name: str = "monitor.svg") -> None:
+    def _camera_display_name(self, camera: Optional["DevicesCamera"] = None) -> str:
+        current_camera = camera or self.camera
+        if current_camera is None:
+            return ""
+        return str(getattr(current_camera, "name", "Unknown Camera") or "Unknown Camera")
+
+    def _camera_display_ip(self, camera: Optional["DevicesCamera"] = None) -> str:
+        current_camera = camera or self.camera
+        if current_camera is None:
+            return ""
+        return _camera_ip(current_camera) or "No camera IP"
+
+    def _camera_placeholder_detail(self, camera: Optional["DevicesCamera"] = None) -> str:
+        current_camera = camera or self.camera
+        if current_camera is None:
+            return ""
+        return f"{self._camera_display_name(current_camera)}\n{self._camera_display_ip(current_camera)}"
+
+    def _set_placeholder_state(self, title: str, icon_name: str = "camera.svg", detail: str = "") -> None:
         icon_file = _icon_path(icon_name)
         if os.path.isfile(icon_file):
             self.placeholder_icon.setPixmap(QIcon(icon_file).pixmap(QSize(40, 40)))
@@ -1778,19 +1891,18 @@ class GridCell(QFrame):
         if not has_camera:
             self._stop_stream()
             self.video_label.setProperty("active", False)
-            self._set_placeholder_state("No Camera", f"Slot {self.index + 1} is empty", "monitor.svg")
+            self._set_placeholder_state("No Camera", "camera.svg", detail=f"Slot {self.index + 1} is empty")
             self._sync_camera_runtime_badges()
             self.setToolTip(f"Empty slot {self.index + 1}")
         else:
             cam = self.camera
-            cam_ip = _camera_ip(cam)
             self.video_label.setProperty("active", False)
             self._sync_camera_runtime_badges()
-            self.setToolTip(cam.name)
+            self.setToolTip(self._camera_placeholder_detail(cam))
             if not self._effective_rtsp_url():
-                self._set_placeholder_state("No Video", f"{cam.name}\n{cam_ip}\nNo RTSP URL", "live_view.svg")
+                self._set_placeholder_state("No Video", "live_view.svg", detail=self._camera_placeholder_detail(cam))
             elif self._mpv_proc is None or self._mpv_proc.poll() is not None:
-                self._set_placeholder_state("Loading Video", f"{cam.name}\n{cam_ip}\nConnecting to stream...", "live_view.svg")
+                self._set_placeholder_state("Loading Video", "live_view.svg", detail=self._camera_placeholder_detail(cam))
                 if not self._stream_restart_timer.isActive():
                     self._schedule_stream_restart(80)
             else:
@@ -1955,11 +2067,11 @@ class GridCell(QFrame):
         except FileNotFoundError:
             self._mpv_proc = None
             self.video_label.setProperty("active", False)
-            self._set_placeholder_state("No Video", "mpv not installed", "live_view.svg")
+            self._set_placeholder_state("No Video", "live_view.svg", detail=self._camera_placeholder_detail())
         except Exception:
             self._mpv_proc = None
             self.video_label.setProperty("active", False)
-            self._set_placeholder_state("No Video", "Stream error", "live_view.svg")
+            self._set_placeholder_state("No Video", "live_view.svg", detail=self._camera_placeholder_detail())
         self.style().unpolish(self.video_label)
         self.style().polish(self.video_label)
 
@@ -2028,9 +2140,8 @@ class GridCell(QFrame):
         if self.camera is None:
             self._stop_stream()
             return
-        cam_ip = _camera_ip(self.camera)
         self.video_label.setProperty("active", False)
-        self._set_placeholder_state("Loading Video", f"{self.camera.name}\n{cam_ip}\nConnecting to stream...", "live_view.svg")
+        self._set_placeholder_state("Loading Video", "live_view.svg", detail=self._camera_placeholder_detail())
         self._stop_stream()
         self._schedule_stream_restart(delay_ms)
 
@@ -2204,7 +2315,7 @@ class GridCell(QFrame):
         if self._handle_startup_login_request(event):
             return
         if event.button() == Qt.LeftButton and self.camera:
-            self._drag_start_pos = event.pos()
+            self._drag_start_pos = event.position().toPoint()
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
@@ -2212,7 +2323,8 @@ class GridCell(QFrame):
             return super().mouseMoveEvent(event)
         if self._drag_start_pos is None:
             return super().mouseMoveEvent(event)
-        if (event.pos() - self._drag_start_pos).manhattanLength() < QApplication.startDragDistance():
+        current_pos = event.position().toPoint()
+        if (current_pos - self._drag_start_pos).manhattanLength() < QApplication.startDragDistance():
             return super().mouseMoveEvent(event)
         self._start_grid_drag()
         super().mouseMoveEvent(event)
@@ -2283,18 +2395,22 @@ class CameraDashboard(QMainWindow):
         from app.services.home.devices.client_service import (
             ClientService as DevicesClientService,
         )
+        from app.services.home.user.department_service import DepartmentService
         from app.store.home.devices.client_store import (
             ClientStore as DevicesClientStore,
         )
         from app.store.home.user.department_store import (
+            DepartmentCrudStore as DevicesDepartmentCrudStore,
             DepartmentStore as DevicesDepartmentStore,
         )
 
         self.client_store: "DevicesClientStore" = DevicesClientStore(DevicesClientService())
         self.department_store: "DevicesDepartmentStore" = DevicesDepartmentStore(DevicesCameraService())
+        self.department_crud_store: "DevicesDepartmentCrudStore" = DevicesDepartmentCrudStore(DepartmentService())
         self.screen_store = ScreenStore(ScreenService())
         self.clients: List["DevicesClient"] = []
         self.cameras: List["DevicesCamera"] = []
+        self.departments: List["DepartmentResponse"] = []
         self.lpr_result_queues: Dict[int, List[dict]] = {}
         self.face_result_queues: Dict[int, List[dict]] = {}
         self.saved_configs: List[SavedScreenConfig] = []
@@ -2325,6 +2441,7 @@ class CameraDashboard(QMainWindow):
         self.populate_camera_tree()
         self.populate_config_combo()
         self.rebuild_grid()
+        self._apply_default_screen_selection()
         self._apply_startup_layout()
 
     # ------------------------------ UI ------------------------------
@@ -2382,7 +2499,7 @@ class CameraDashboard(QMainWindow):
         layout.setSpacing(12)
 
         header = QHBoxLayout()
-        self.sidebar_title = QLabel("Process Clients & Cameras")
+        self.sidebar_title = QLabel("Cameras")
         self.sidebar_title.setObjectName("sidebarTitle")
         header.addWidget(self.sidebar_title)
         header.addStretch()
@@ -2398,7 +2515,7 @@ class CameraDashboard(QMainWindow):
         layout.addLayout(header)
 
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Search process clients or cameras...")
+        self.search.setPlaceholderText("Search departments or cameras...")
         self.search.textChanged.connect(self.populate_camera_tree)
         layout.addWidget(self.search)
 
@@ -2409,9 +2526,16 @@ class CameraDashboard(QMainWindow):
         self.sidebar_camera_page_layout = QVBoxLayout(self.sidebar_camera_page)
         self.sidebar_camera_page_layout.setContentsMargins(0, 0, 0, 0)
         self.sidebar_camera_page_layout.setSpacing(0)
+        self.camera_render_panel = RoundedClipFrame(18)
+        self.camera_render_panel.setObjectName("cameraRenderPanel")
+        self.camera_render_panel.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        render_layout = QVBoxLayout(self.camera_render_panel)
+        render_layout.setContentsMargins(0, 0, 0, 0)
+        render_layout.setSpacing(0)
         self.camera_tree = DragCameraTree()
         self.camera_tree.cameraActivated.connect(self.add_camera_to_last_stream)
-        self.sidebar_camera_page_layout.addWidget(self.camera_tree, 1)
+        render_layout.addWidget(self.camera_tree, 1)
+        self.sidebar_camera_page_layout.addWidget(self.camera_render_panel, 1)
         self.sidebar_stack.addWidget(self.sidebar_camera_page)
 
         self.sidebar_queue_page = QWidget()
@@ -2433,7 +2557,7 @@ class CameraDashboard(QMainWindow):
         line.setFrameShape(QFrame.HLine)
         layout.addWidget(line)
 
-        self.config_combo = PrimeSelect(placeholder="Select screen")
+        self.config_combo = PrimeSelect(placeholder="Main Screen")
         self.config_combo.value_changed.connect(self.load_configuration_by_id)
         layout.addWidget(self.config_combo)
 
@@ -2617,22 +2741,41 @@ class CameraDashboard(QMainWindow):
             QWidget#cameraAccordionContent {
                 background: transparent;
             }
-            QFrame#cameraSection {
+            QFrame#cameraRenderPanel {
                 background: transparent;
-                border: none;
+                border-radius: 18px;
+            }
+            QFrame#cameraSection {
+                background: #31353a;
+                border: 1px solid #3d434b;
+                border-radius: 18px;
             }
             QFrame#cameraSectionHeader {
-                background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
-                    stop:0 rgba(20, 24, 30, 0.98),
-                    stop:1 rgba(14, 18, 24, 0.98));
-                border: 1px solid #262f3a;
+                background: transparent;
+                border: none;
                 border-radius: 16px;
             }
             QFrame#cameraSectionHeader:hover {
-                border: 1px solid #3b82f6;
-                background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
-                    stop:0 rgba(24, 30, 39, 0.98),
-                    stop:1 rgba(16, 21, 28, 0.98));
+                background: rgba(255, 255, 255, 0.03);
+            }
+            QFrame#accordionIconCard {
+                background: #262b31;
+                border: 1px solid #353b44;
+                border-radius: 14px;
+            }
+            QLabel#accordionIcon {
+                min-width: 22px;
+                min-height: 22px;
+                color: #dbeafe;
+                font-size: 10px;
+                font-weight: 800;
+                qproperty-alignment: AlignCenter;
+            }
+            QLabel#cameraSectionEyebrow {
+                color: #7dd3fc;
+                font-size: 10px;
+                font-weight: 800;
+                letter-spacing: 1px;
             }
             QLabel#cameraSectionTitle {
                 color: #f8fafc;
@@ -2644,9 +2787,9 @@ class CameraDashboard(QMainWindow):
                 font-size: 11px;
             }
             QLabel#cameraCountBadge {
-                background: rgba(15, 23, 42, 0.9);
+                background: #262b31;
                 color: #dbeafe;
-                border: 1px solid #334155;
+                border: 1px solid #353b44;
                 border-radius: 999px;
                 padding: 4px 8px;
                 font-size: 11px;
@@ -2680,80 +2823,65 @@ class CameraDashboard(QMainWindow):
                 min-width: 16px;
             }
             QFrame#cameraSectionBody {
-                background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
-                    stop:0 rgba(11, 15, 21, 0.92),
-                    stop:1 rgba(8, 12, 18, 0.86));
-                border: 1px solid rgba(56, 68, 84, 0.82);
-                border-radius: 18px;
+                background: transparent;
+                border: none;
+                border-radius: 0;
             }
             QFrame#cameraAccordionRow {
-                background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
-                    stop:0 rgba(19, 27, 38, 0.98),
-                    stop:0.52 rgba(14, 20, 29, 0.98),
-                    stop:1 rgba(10, 15, 22, 0.98));
-                border: 1px solid rgba(77, 94, 116, 0.88);
-                border-top: 1px solid rgba(148, 163, 184, 0.16);
-                border-left: 4px solid rgba(116, 139, 168, 0.92);
-                border-radius: 16px;
+                background: #121518;
+                border: 2px solid #353c45;
+                border-radius: 12px;
             }
             QFrame#cameraAccordionRow[online="true"] {
-                background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
-                    stop:0 rgba(18, 30, 29, 0.98),
-                    stop:1 rgba(11, 18, 21, 0.98));
-                border: 1px solid rgba(63, 146, 109, 0.66);
-                border-top: 1px solid rgba(134, 239, 172, 0.14);
-                border-left: 4px solid #22c55e;
+                background: #121518;
+                border: 2px solid #353c45;
             }
             QFrame#cameraAccordionRow:hover {
-                background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
-                    stop:0 rgba(24, 37, 52, 0.99),
-                    stop:0.55 rgba(17, 28, 41, 0.99),
-                    stop:1 rgba(12, 20, 30, 0.99));
-                border: 1px solid rgba(96, 165, 250, 0.94);
-                border-top: 1px solid rgba(191, 219, 254, 0.18);
-                border-left: 4px solid #3b82f6;
+                background: #171b20;
+                border: 2px solid #4a5058;
+            }
+            QFrame#cameraRowIconCard {
+                background: #1a1f25;
+                border: 1px solid #3a424c;
+                border-radius: 12px;
+            }
+            QLabel#cameraRowIcon {
+                min-width: 18px;
+                min-height: 18px;
+                color: #dbeafe;
+                font-size: 8px;
+                font-weight: 800;
+                qproperty-alignment: AlignCenter;
+            }
+            QLabel#cameraRowEyebrow {
+                color: #7dd3fc;
+                font-size: 10px;
+                font-weight: 800;
+                letter-spacing: 1px;
             }
             QLabel#cameraRowTitle {
                 color: #f8fafc;
-                font-size: 13px;
+                font-size: 12px;
                 font-weight: 700;
             }
             QLabel#cameraRowMeta {
-                color: #9fb1c8;
-                font-size: 11px;
+                color: #94a3b8;
+                font-size: 9px;
+                font-weight: 500;
             }
-            QLabel#rowStateBadge {
-                border-radius: 999px;
-                padding: 4px 9px;
-                font-size: 10px;
-                font-weight: 700;
+            QFrame#cameraRowFpsCard {
+                background: rgba(15, 23, 42, 0.9);
+                border: 1px solid rgba(71, 85, 105, 0.72);
+                border-radius: 10px;
+                min-width: 62px;
             }
-            QLabel#rowStateBadge[tone="online"] {
-                background: rgba(22, 163, 74, 0.17);
-                color: #bbf7d0;
-                border: 1px solid rgba(74, 222, 128, 0.42);
-            }
-            QLabel#rowStateBadge[tone="offline"] {
-                background: rgba(148, 163, 184, 0.12);
-                color: #dbe4ef;
-                border: 1px solid rgba(71, 85, 105, 0.88);
-            }
-            QLabel#cameraMetaBadge,
-            QLabel#cameraFpsBadge {
-                border-radius: 999px;
-                padding: 4px 9px;
-                font-size: 10px;
-                font-weight: 700;
-            }
-            QLabel#cameraMetaBadge {
-                background: rgba(37, 99, 235, 0.16);
-                color: #dbeafe;
-                border: 1px solid rgba(96, 165, 250, 0.34);
-            }
-            QLabel#cameraFpsBadge {
-                background: rgba(15, 23, 42, 0.92);
+            QLabel#cameraRowFpsText {
+                background: transparent;
                 color: #d8e1ea;
-                border: 1px solid rgba(71, 85, 105, 0.92);
+                border: none;
+                font-size: 9px;
+                font-weight: 800;
+                qproperty-alignment: AlignCenter;
             }
             QLabel#cameraDragHint {
                 color: #7a8ca3;
@@ -2820,6 +2948,23 @@ class CameraDashboard(QMainWindow):
                 background: transparent;
                 color: #94a3b8;
                 font-size: 12px;
+            }
+            QLabel#streamCameraName {
+                background: transparent;
+                color: #f8fafc;
+                font-size: 12px;
+                font-weight: 700;
+            }
+            QLabel#streamCameraIp {
+                background: transparent;
+                color: #94a3b8;
+                font-size: 11px;
+            }
+            QLabel#streamCameraName[compact="true"] {
+                font-size: 11px;
+            }
+            QLabel#streamCameraIp[compact="true"] {
+                font-size: 10px;
             }
             QLabel#videoPlaceholder[active="true"] {
                 background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
@@ -2900,6 +3045,7 @@ class CameraDashboard(QMainWindow):
         except Exception as exc:
             self.clients = []
             self.cameras = []
+            self.departments = []
             self.client_map = {}
             self.camera_map = {}
             self.saved_configs = []
@@ -2908,6 +3054,7 @@ class CameraDashboard(QMainWindow):
 
         self.clients = list(self.client_store.clients)
         self.cameras = list(self.department_store.cameras)
+        self.departments = list(self.department_crud_store.load())
         self.client_map = {c.id: c for c in self.clients}
         self.camera_map = {c.id: c for c in self.cameras}
 
@@ -2927,7 +3074,25 @@ class CameraDashboard(QMainWindow):
             for assignment in screen.cameras
             if assignment.camera_id > 0
         ]
-        return SavedScreenConfig(screen.id, _grid_size_value(screen.screen_type), cameras)
+        return SavedScreenConfig(screen.id, _grid_size_value(screen.screen_type), bool(screen.is_main), cameras)
+
+    def _main_saved_config(self) -> Optional[SavedScreenConfig]:
+        return next((cfg for cfg in self.saved_configs if cfg.is_main), None)
+
+    def _default_saved_screen_id(self) -> Optional[int]:
+        main_config = self._main_saved_config()
+        return main_config.id if main_config is not None else None
+
+    def _apply_default_screen_selection(self) -> None:
+        if self.selected_config is not None:
+            return
+        default_screen_id = self._default_saved_screen_id()
+        if default_screen_id is None:
+            self.config_combo.blockSignals(True)
+            self.config_combo.set_value(MAIN_SCREEN_OPTION)
+            self.config_combo.blockSignals(False)
+            return
+        self.load_configuration_by_id(default_screen_id)
 
     def _refresh_saved_configs(
         self,
@@ -2935,14 +3100,19 @@ class CameraDashboard(QMainWindow):
         preserve_current_selection: bool = True,
     ) -> None:
         current_id = self.selected_config.id if self.selected_config is not None else None
-        target_id = preferred_screen_id if preferred_screen_id is not None else current_id
         self.saved_configs = [self._saved_config_from_screen(item) for item in self.screen_store.screens]
+        default_id = self._default_saved_screen_id()
+        target_id = (
+            preferred_screen_id
+            if preferred_screen_id is not None
+            else current_id if current_id is not None else default_id
+        )
         self.populate_config_combo()
 
         if not preserve_current_selection:
             self.selected_config = None
             self.config_combo.blockSignals(True)
-            self.config_combo.set_value(None)
+            self.config_combo.set_value(default_id if default_id is not None else MAIN_SCREEN_OPTION)
             self.config_combo.blockSignals(False)
             self.update_save_button_state()
             return
@@ -2950,14 +3120,14 @@ class CameraDashboard(QMainWindow):
         if target_id is None:
             self.selected_config = None
             self.config_combo.blockSignals(True)
-            self.config_combo.set_value(None)
+            self.config_combo.set_value(MAIN_SCREEN_OPTION)
             self.config_combo.blockSignals(False)
             self.update_save_button_state()
             return
 
         self.selected_config = next((cfg for cfg in self.saved_configs if cfg.id == target_id), None)
         self.config_combo.blockSignals(True)
-        self.config_combo.set_value(self.selected_config.id if self.selected_config is not None else None)
+        self.config_combo.set_value(self.selected_config.id if self.selected_config is not None else MAIN_SCREEN_OPTION)
         self.config_combo.blockSignals(False)
         self.update_save_button_state()
 
@@ -3066,54 +3236,43 @@ class CameraDashboard(QMainWindow):
 
     def populate_camera_tree(self):
         query = self.search.text().strip().lower()
-        camera_by_client: Dict[int, List["DevicesCamera"]] = {}
-        unassigned: List["DevicesCamera"] = []
-        process_clients = [
-            client
-            for client in self.clients
-            if str(getattr(client, "type", "") or "").strip().lower() == "process"
-        ]
-        process_client_ids = {client.id for client in process_clients}
-
-        for cam in self.cameras:
-            linked_ids = []
-            for client_id in (getattr(cam, "client_id_1", None), getattr(cam, "client_id_2", None)):
-                if client_id in process_client_ids and client_id not in linked_ids:
-                    linked_ids.append(client_id)
-            if not linked_ids:
-                unassigned.append(cam)
-                continue
-            for client_id in linked_ids:
-                camera_by_client.setdefault(client_id, []).append(cam)
-
+        section_camera_ids: set[int] = set()
+        camera_by_id = {int(getattr(cam, "id", 0) or 0): cam for cam in self.cameras if _as_int(getattr(cam, "id", 0), 0) > 0}
         sections: List[dict] = []
-        sorted_clients = sorted(
-            process_clients,
-            key=lambda client: (
-                not bool(getattr(client, "online", False)),
-                str(getattr(client, "name", "") or "").lower(),
-            ),
+        sorted_departments = sorted(
+            self.departments,
+            key=lambda department: str(getattr(department, "name", "") or "").lower(),
         )
 
-        for client in sorted_clients:
-            related_cameras = camera_by_client.get(client.id, [])
+        for department in sorted_departments:
+            department_camera_ids = []
+            seen_camera_ids: set[int] = set()
+            for camera_id in getattr(department, "camera_ids", []):
+                normalized_id = _as_int(camera_id, 0)
+                if normalized_id <= 0 or normalized_id in seen_camera_ids:
+                    continue
+                seen_camera_ids.add(normalized_id)
+                department_camera_ids.append(normalized_id)
+
+            related_cameras = [
+                camera_by_id[camera_id]
+                for camera_id in department_camera_ids
+                if camera_id in camera_by_id
+            ]
             if not related_cameras:
                 continue
 
-            if query:
-                client_name = str(getattr(client, "name", "") or "")
-                client_ip = str(getattr(client, "ip", "") or "")
-                client_match = query in client_name.lower() or query in client_ip.lower()
-                filtered = [
+            department_name = str(getattr(department, "name", "") or f"Department {getattr(department, 'id', 0)}").strip()
+            department_match = query in department_name.lower() if query else False
+            if query and not department_match:
+                related_cameras = [
                     cam
                     for cam in related_cameras
-                    if client_match
-                    or query in str(getattr(cam, "name", "") or "").lower()
+                    if query in str(getattr(cam, "name", "") or "").lower()
                     or query in _camera_ip(cam).lower()
                 ]
-                if not client_match and not filtered:
+                if not related_cameras:
                     continue
-                related_cameras = filtered
 
             related_cameras = sorted(
                 related_cameras,
@@ -3122,33 +3281,18 @@ class CameraDashboard(QMainWindow):
                     str(getattr(cam, "name", "") or "").lower(),
                 ),
             )
-
-            monitor_data = getattr(client, "monitor_data", {})
-            if not isinstance(monitor_data, dict):
-                monitor_data = {}
-            endpoint = str(getattr(client, "ip", "") or "").strip()
-            port = _as_int(getattr(client, "port", 0), 0)
-            if endpoint and port > 0:
-                endpoint = f"{endpoint}:{port}"
-            subtitle_parts = [part for part in [endpoint] if part]
-            if bool(getattr(client, "online", False)):
-                cpu = monitor_data.get("cpu")
-                memory = monitor_data.get("memory")
-                if cpu is not None:
-                    subtitle_parts.append(f"CPU {_as_float(cpu):.0f}%")
-                if memory is not None:
-                    subtitle_parts.append(f"RAM {_as_float(memory):.0f}%")
-            online_count = sum(1 for cam in related_cameras if getattr(cam, "online", False))
-            camera_count = len(related_cameras)
+            section_camera_ids.update(_as_int(getattr(cam, "id", 0), 0) for cam in related_cameras)
             sections.append(
                 {
-                    "key": f"client:{client.id}",
-                    "title": str(getattr(client, "name", "") or f"Process Client {client.id}"),
-                    "subtitle": "  |  ".join(subtitle_parts),
-                    "count_text": f"{online_count}/{camera_count} live" if camera_count else "0 live",
-                    "state_text": "Online" if getattr(client, "online", False) else "Offline",
-                    "state_tone": "online" if getattr(client, "online", False) else "offline",
-                    "expanded": bool(query) or bool(getattr(client, "online", False)),
+                    "key": f"department:{_as_int(getattr(department, 'id', 0), 0)}",
+                    "title": department_name,
+                    "subtitle": "",
+                    "eyebrow_text": "DEPARTMENT",
+                    "icon_name": "home.svg",
+                    "count_text": "",
+                    "state_text": "",
+                    "state_tone": "neutral",
+                    "expanded": bool(query) or not sections,
                     "force_expanded": bool(query),
                     "cameras": related_cameras,
                 }
@@ -3156,7 +3300,8 @@ class CameraDashboard(QMainWindow):
 
         visible_unassigned = [
             cam
-            for cam in unassigned
+            for cam in self.cameras
+            if _as_int(getattr(cam, "id", 0), 0) not in section_camera_ids
             if not query
             or query in str(getattr(cam, "name", "") or "").lower()
             or query in _camera_ip(cam).lower()
@@ -3170,14 +3315,17 @@ class CameraDashboard(QMainWindow):
                     str(getattr(cam, "name", "") or "").lower(),
                 ),
             )
-            online_count = sum(1 for cam in visible_unassigned if getattr(cam, "online", False))
             sections.append(
                 {
                     "key": "unassigned",
-                    "title": "Cameras",
-                    "count_text": f"{online_count}/{len(visible_unassigned)} live",
+                    "title": "",
+                    "subtitle": "",
+                    "eyebrow_text": "UNASSIGNED GROUP",
+                    "icon_name": "camera.svg",
+                    "count_text": "",
+                    "state_text": "",
                     "state_tone": "neutral",
-                    "expanded": True,
+                    "expanded": bool(query) or not sections,
                     "force_expanded": bool(query),
                     "cameras": visible_unassigned,
                 }
@@ -3186,22 +3334,28 @@ class CameraDashboard(QMainWindow):
         empty_message = (
             "Try a different search term."
             if query
-            else "No process-linked cameras are available for this account yet."
+            else "No department cameras are available for this account yet."
         )
         self.camera_tree.set_sections(sections, empty_message=empty_message)
 
     def populate_config_combo(self):
         self.config_combo.blockSignals(True)
-        options = [{"label": "Manual Selection", "value": None}]
+        options = [{"label": "Main Screen", "value": MAIN_SCREEN_OPTION}]
         for cfg in self.saved_configs:
             grid_size = _grid_size_value(cfg.screen_type)
             options.append(
                 {
-                    "label": f"{grid_size}x{grid_size} Grid ({len(cfg.cameras)} cameras)",
+                    "label": f"{grid_size}x{grid_size} Grid ({len(cfg.cameras)} cameras){' • Main' if cfg.is_main else ''}",
                     "value": cfg.id,
                 }
             )
         self.config_combo.set_options(options)
+        current_value = (
+            self.selected_config.id
+            if self.selected_config is not None
+            else self._default_saved_screen_id() or MAIN_SCREEN_OPTION
+        )
+        self.config_combo.set_value(current_value)
         self.config_combo.blockSignals(False)
 
     # ------------------------------ grid ------------------------------
@@ -3209,7 +3363,7 @@ class CameraDashboard(QMainWindow):
         self.selected_grid_size = int(text.split("x")[0])
         self.selected_config = None
         self.config_combo.blockSignals(True)
-        self.config_combo.set_value(None)
+        self.config_combo.set_value(MAIN_SCREEN_OPTION)
         self.config_combo.blockSignals(False)
         self.rebuild_grid(preserve_existing=True)
 
@@ -3343,7 +3497,7 @@ class CameraDashboard(QMainWindow):
         if camera is None:
             self.queue_camera_id = None
             self.camera_queue_panel.set_camera(None)
-            self.sidebar_title.setText("Process Clients & Cameras")
+            self.sidebar_title.setText("Cameras")
             self.search.show()
             self.sidebar_stack.setCurrentWidget(self.sidebar_camera_page)
             self._set_sidebar_width_mode(False)
@@ -3355,7 +3509,7 @@ class CameraDashboard(QMainWindow):
         self.sidebar_stack.setCurrentWidget(self.sidebar_queue_page if show_queue else self.sidebar_camera_page)
         self._set_sidebar_width_mode(show_queue)
         if not show_queue:
-            self.sidebar_title.setText("Process Clients & Cameras")
+            self.sidebar_title.setText("Cameras")
             self.search.show()
 
     def _show_camera_queue(self, camera: "DevicesCamera") -> None:
@@ -3534,6 +3688,7 @@ class CameraDashboard(QMainWindow):
 
         payload = {
             "screen_type": _grid_size_value(self.selected_grid_size),
+            "is_main": bool(self.selected_config.is_main) if self.selected_config is not None else False,
             "cameras": cameras,
         }
         try:
@@ -3560,6 +3715,9 @@ class CameraDashboard(QMainWindow):
         self._refresh_saved_configs(preferred_screen_id=preferred_id)
         if result == QDialog.DialogCode.Accepted and preferred_id is not None:
             self.load_configuration_by_id(preferred_id)
+            return
+        if result == QDialog.DialogCode.Accepted:
+            self._apply_default_screen_selection()
 
     def load_configuration_by_index(self, combo_index: int):
         screen_id = None
@@ -3567,9 +3725,12 @@ class CameraDashboard(QMainWindow):
             screen_id = self.saved_configs[combo_index - 1].id
         self.load_configuration_by_id(screen_id)
 
-    def load_configuration_by_id(self, screen_id: Optional[int]):
-        if screen_id is None:
+    def load_configuration_by_id(self, screen_id):
+        if screen_id in {None, MAIN_SCREEN_OPTION}:
             self.selected_config = None
+            self.config_combo.blockSignals(True)
+            self.config_combo.set_value(MAIN_SCREEN_OPTION)
+            self.config_combo.blockSignals(False)
             self.update_save_button_state()
             return
 
@@ -3577,7 +3738,7 @@ class CameraDashboard(QMainWindow):
         if cfg is None:
             self.selected_config = None
             self.config_combo.blockSignals(True)
-            self.config_combo.set_value(None)
+            self.config_combo.set_value(MAIN_SCREEN_OPTION)
             self.config_combo.blockSignals(False)
             self.update_save_button_state()
             return

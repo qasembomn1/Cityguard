@@ -1,6 +1,6 @@
 import sys
 
-from PySide6.QtCore import QPoint, QSize, Qt, Signal
+from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QApplication,
@@ -77,18 +77,32 @@ class SelectItem(QWidget):
 
 class SelectTrigger(QFrame):
     clicked = Signal()
+    clear_requested = Signal()
     _height = 40
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._text = ""
         self._hovered = False
+        self._show_clear = False
+        self._clear_hovered = False
+        self._clear_rect = QRect()
         self.setFixedHeight(self._height)
         self.setCursor(Qt.PointingHandCursor)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setMouseTracking(True)
 
     def set_text(self, text: str) -> None:
         self._text = text
+        self.update()
+
+    def set_clearable(self, enabled: bool) -> None:
+        if self._show_clear == enabled:
+            return
+        self._show_clear = enabled
+        if not enabled:
+            self._clear_hovered = False
+            self._clear_rect = QRect()
         self.update()
 
     def sizeHint(self):
@@ -104,12 +118,25 @@ class SelectTrigger(QFrame):
 
     def leaveEvent(self, event):
         self._hovered = False
+        self._clear_hovered = False
         self.update()
         super().leaveEvent(event)
 
+    def mouseMoveEvent(self, event):
+        mouse_pos = event.position().toPoint()
+        clear_hovered = self._show_clear and self._clear_rect.contains(mouse_pos)
+        if clear_hovered != self._clear_hovered:
+            self._clear_hovered = clear_hovered
+            self.update()
+        super().mouseMoveEvent(event)
+
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            self.clicked.emit()
+            mouse_pos = event.position().toPoint()
+            if self._show_clear and self._clear_rect.contains(mouse_pos):
+                self.clear_requested.emit()
+            else:
+                self.clicked.emit()
             event.accept()
             return
         super().mousePressEvent(event)
@@ -127,8 +154,37 @@ class SelectTrigger(QFrame):
         painter.drawRoundedRect(rect, 10, 10)
 
         painter.setPen(QPen(QColor("#d6d6d6")))
-        text_rect = rect.adjusted(16, 0, -28, 0)
+        text_right_padding = 56 if self._show_clear else 28
+        text_rect = rect.adjusted(16, 0, -text_right_padding, 0)
         painter.drawText(text_rect, Qt.AlignVCenter | Qt.AlignLeft, self._text)
+
+        self._clear_rect = QRect()
+        if self._show_clear:
+            clear_size = 18
+            clear_x = rect.right() - 38 - clear_size
+            clear_y = rect.center().y() - (clear_size // 2)
+            self._clear_rect = QRect(clear_x, clear_y, clear_size, clear_size)
+
+            if self._clear_hovered:
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(QBrush(QColor("#3a3f45")))
+                painter.drawRoundedRect(self._clear_rect, 9, 9)
+
+            clear_margin = 5
+            clear_color = QColor("#d6d6d6") if self._clear_hovered else QColor("#9ca3af")
+            painter.setPen(QPen(clear_color, 1.6))
+            painter.drawLine(
+                self._clear_rect.left() + clear_margin,
+                self._clear_rect.top() + clear_margin,
+                self._clear_rect.right() - clear_margin,
+                self._clear_rect.bottom() - clear_margin,
+            )
+            painter.drawLine(
+                self._clear_rect.right() - clear_margin,
+                self._clear_rect.top() + clear_margin,
+                self._clear_rect.left() + clear_margin,
+                self._clear_rect.bottom() - clear_margin,
+            )
 
         chevron_x = rect.right() - 14
         chevron_y = rect.center().y()
@@ -281,6 +337,7 @@ class PrimeSelect(QWidget):
 
         self.button = SelectTrigger()
         self.button.clicked.connect(self.toggle_popup)
+        self.button.clear_requested.connect(self.clear)
         layout.addWidget(self.button)
 
         self.popup = PopupPanel(self)
@@ -318,6 +375,8 @@ class PrimeSelect(QWidget):
 
     def clear(self) -> None:
         self.selected_value = None
+        if self.popup.isVisible():
+            self.popup.hide()
         self.refresh_label()
         self.selection_changed.emit(self.selected_value)
         self.value_changed.emit(self.selected_value)
@@ -327,13 +386,16 @@ class PrimeSelect(QWidget):
 
     def refresh_label(self) -> None:
         text = self.placeholder
+        has_value = False
         for option in self.options:
             label, value = self.normalize_option(option)
             if value == self.selected_value:
                 text = label
+                has_value = True
                 break
 
         self.button.set_text(text)
+        self.button.set_clearable(has_value)
 
     def _popup_screen_geometry(self):
         anchor = self.button.mapToGlobal(self.button.rect().center())
