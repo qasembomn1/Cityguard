@@ -9,7 +9,6 @@ from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, Signal, QRectF
 from PySide6.QtGui import QPainter,QColor,QPainterPath
 from app.constants._init_ import Constants
 from PySide6.QtWidgets import (
-    QFileDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -28,6 +27,7 @@ from app.store.auth.auth_store import AuthStore
 from app.store.home.face.face_report_store import FaceReportStore
 from app.store.home.user.department_store import DepartmentStore as CameraDepartmentStore
 from app.ui.button import PrimeButton
+from app.ui.file_browser_dialog import choose_restricted_save_file_path
 from app.ui.multiselect import PrimeMultiSelect
 from app.ui.sidebar_toggle import SidebarToggleButton
 from app.ui.table import PrimeDataTable, PrimeTableColumn
@@ -740,7 +740,12 @@ class BaseFaceReportPage(QWidget):
 
         default_name = f"{self.export_prefix}-{datetime.now().strftime('%Y%m%d-%H%M%S')}.csv"
         suggested = os.path.join(os.path.expanduser("~"), default_name)
-        path, _ = QFileDialog.getSaveFileName(self, f"Export {self.title_text}", suggested, "CSV Files (*.csv)")
+        path = choose_restricted_save_file_path(
+            self,
+            f"Export {self.title_text}",
+            suggested,
+            "CSV Files (*.csv)",
+        )
         if not path:
             return
 

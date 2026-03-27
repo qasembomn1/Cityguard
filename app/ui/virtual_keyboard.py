@@ -9,8 +9,6 @@ from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QFrame,
     QGridLayout,
-    QHBoxLayout,
-    QLabel,
     QLineEdit,
     QPlainTextEdit,
     QPushButton,
@@ -88,7 +86,6 @@ class FloatingKeyboard(QFrame):
         self._user_positioned = False
         self._letter_buttons: list[QPushButton] = []
         self._shift_button: QPushButton | None = None
-        self._drag_handles: tuple[QWidget, ...] = ()
 
         self.setObjectName("virtualKeyboard")
         self.setWindowFlags(
@@ -102,26 +99,7 @@ class FloatingKeyboard(QFrame):
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(10, 10, 10, 10)
-        root_layout.setSpacing(8)
-
-        header = QFrame(self)
-        header.setObjectName("virtualKeyboardHeader")
-        header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(8, 6, 8, 6)
-        header_layout.setSpacing(6)
-
-        self.header_title = QLabel("Keyboard")
-        self.header_title.setObjectName("virtualKeyboardTitle")
-        header_layout.addWidget(self.header_title)
-        header_layout.addStretch(1)
-
-        self.close_button = self._create_button("Close", self.hide, wide=True, accent=True)
-        self.close_button.setObjectName("virtualKeyboardClose")
-        header_layout.addWidget(self.close_button)
-        root_layout.addWidget(header)
-        self._drag_handles = (header, self.header_title)
-        for widget in self._drag_handles:
-            widget.installEventFilter(self)
+        root_layout.setSpacing(4)
 
         grid = QGridLayout()
         grid.setHorizontalSpacing(4)
@@ -160,16 +138,6 @@ class FloatingKeyboard(QFrame):
                 background: rgba(9, 14, 22, 0.97);
                 border: 1px solid rgba(71, 85, 105, 0.75);
                 border-radius: 14px;
-            }
-            QFrame#virtualKeyboardHeader {
-                background: rgba(15, 23, 42, 0.92);
-                border: 1px solid rgba(71, 85, 105, 0.55);
-                border-radius: 10px;
-            }
-            QLabel#virtualKeyboardTitle {
-                color: #f8fafc;
-                font-size: 13px;
-                font-weight: 700;
             }
             QPushButton {
                 background: rgba(30, 41, 59, 0.96);
@@ -213,7 +181,7 @@ class FloatingKeyboard(QFrame):
             }
             """
         )
-        self.resize(620, 260)
+        self.resize(620, 220)
         self.hide()
 
     def _create_button(
@@ -272,7 +240,6 @@ class FloatingKeyboard(QFrame):
         if not _is_alive(widget):
             widget = None
         self._target = widget
-        self.header_title.setText("Keyboard" if widget is None else f"Keyboard: {type(widget).__name__}")
 
     def show_for(self, widget: EditableWidget) -> None:
         previous_target = self._target
@@ -376,7 +343,6 @@ class FloatingKeyboard(QFrame):
         if target is None:
             return
         window = target.window()
-        window.setWindowFlags(Qt.FramelessWindowHint)
         if window is not None:
             window.focusNextChild()
 
@@ -423,25 +389,6 @@ class FloatingKeyboard(QFrame):
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         self._drag_offset = None
         super().mouseReleaseEvent(event)
-
-    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-        if watched in self._drag_handles:
-            if event.type() == QEvent.Type.MouseButtonPress:
-                mouse_event = event
-                if isinstance(mouse_event, QMouseEvent) and mouse_event.button() == Qt.MouseButton.LeftButton:
-                    self._drag_offset = mouse_event.globalPosition().toPoint() - self.frameGeometry().topLeft()
-                    return True
-            if event.type() == QEvent.Type.MouseMove:
-                mouse_event = event
-                if isinstance(mouse_event, QMouseEvent) and self._drag_offset is not None and (mouse_event.buttons() & Qt.MouseButton.LeftButton):
-                    self.move(mouse_event.globalPosition().toPoint() - self._drag_offset)
-                    self._user_positioned = True
-                    return True
-            if event.type() == QEvent.Type.MouseButtonRelease:
-                self._drag_offset = None
-                return True
-        return super().eventFilter(watched, event)
-
 
 class KeyboardToggleButton(QToolButton):
     def __init__(self, root: QWidget, toggle_handler):

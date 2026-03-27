@@ -63,32 +63,12 @@ class FaceSearchService:
         return self._embedding_helper._normalize_embedding_value(value)
 
     def _embedding_result_from_payload(self, payload: Any, fallback_image_url: str = "") -> FaceEmbeddingResult:
-        if isinstance(payload, list):
-            embedding = payload
-        elif isinstance(payload, dict):
-            embedding = self._extract_nested_value(
-                payload,
-                ("embedding", "embeddings", "face_embedding", "vector"),
-            )
-        else:
-            embedding = payload
-
-        embedding = self._normalize_embedding_value(embedding)
+        embedding = self._embedding_helper._extract_embedding_value(payload)
         if embedding in (None, "", [], {}):
             raise RuntimeError("Embedding API did not return an embedding value.")
 
-        crop_image_url = self._coerce_face_value(
-            self._extract_nested_value(
-                payload,
-                ("crop_face", "cropped_face", "face_crop", "crop", "image", "image_url", "url", "file", "filename"),
-            )
-        )
-        image_url = self._coerce_face_value(
-            self._extract_nested_value(
-                payload,
-                ("face", "image", "image_url", "url", "file", "filename"),
-            )
-        )
+        crop_image_url = self._embedding_helper._extract_face_payload_value(payload, crop=True)
+        image_url = self._embedding_helper._extract_face_payload_value(payload, crop=False)
         normalized_image_url = image_url or fallback_image_url
         normalized_crop_url = crop_image_url or image_url or fallback_image_url
         return FaceEmbeddingResult(

@@ -210,6 +210,7 @@ CONTROL_PANEL_CARD_ACCENTS = {
     "Activity Log": ("#be123c", "#fb7185"),
     "Report": ("#1d4ed8", "#60a5fa"),
     "Activation Management": ("#b45309", "#f59e0b"),
+    "Browser": ("#0f766e", "#38bdf8"),
     "Settings": ("#475569", "#94a3b8"),
 }
 def _tab_accent(tab: dict) -> tuple[str, str]:

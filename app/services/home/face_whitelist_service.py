@@ -37,19 +37,27 @@ class FaceWhitelistService:
             headers["Authorization"] = f"Bearer {token}"
         return headers
 
+    def _should_retry_fallback(self, exc: Exception) -> bool:
+        message = str(exc)
+        return "[404]" in message or "[405]" in message
+
     def _request_with_fallback(
         self,
         attempts: Iterable[tuple[str, str]],
         data: Dict[str, Any] | None = None,
     ) -> Any:
+        attempts_list = list(attempts)
         last_exc: Exception | None = None
-        for method, path in attempts:
+        for index, (method, path) in enumerate(attempts_list):
             try:
                 payload = self.api.request(method, path, data=data, auth=True)
                 self._raise_if_failed(payload)
                 return payload
             except Exception as exc:
                 last_exc = exc
+                is_last_attempt = index == len(attempts_list) - 1
+                if is_last_attempt or not self._should_retry_fallback(exc):
+                    break
         if last_exc is not None:
             raise last_exc
         raise RuntimeError("No face whitelist API attempts configured.")
@@ -223,8 +231,15 @@ class FaceWhitelistService:
                 value = payload.get(key)
                 if value not in (None, "", [], {}):
                     return value
-            for nested_key in ("data", "result", "payload"):
+            preferred_nested_keys = ("data", "result", "payload", "base64", "response")
+            for nested_key in preferred_nested_keys:
                 nested_value = self._extract_nested_value(payload.get(nested_key), keys)
+                if nested_value not in (None, "", [], {}):
+                    return nested_value
+            for nested_key, nested_candidate in payload.items():
+                if nested_key in preferred_nested_keys or nested_key in keys:
+                    continue
+                nested_value = self._extract_nested_value(nested_candidate, keys)
                 if nested_value not in (None, "", [], {}):
                     return nested_value
         elif isinstance(payload, list):
@@ -233,6 +248,73 @@ class FaceWhitelistService:
                 if nested_value not in (None, "", [], {}):
                     return nested_value
         return None
+
+    def _extract_embedding_value(self, payload: Any) -> Any:
+        embedding = self._extract_nested_value(
+            payload,
+            ("embedding", "embeddings", "face_embedding", "vector"),
+        )
+        embedding = self._normalize_embedding_value(embedding)
+        if embedding not in (None, "", [], {}):
+            return embedding
+
+        fallback_value = self._extract_nested_value(payload, ("base64",))
+        fallback_value = self._normalize_embedding_value(fallback_value)
+        if isinstance(fallback_value, dict):
+            nested_embedding = self._extract_embedding_value(fallback_value)
+            if nested_embedding not in (None, "", [], {}):
+                return nested_embedding
+            return ""
+        if isinstance(fallback_value, str) and fallback_value.lower().startswith("data:image/"):
+            return ""
+        return fallback_value
+
+    def _image_data_url(self, value: Any) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        if text.lower().startswith("data:image/"):
+            return text
+
+        normalized = "".join(text.split())
+        if not normalized:
+            return ""
+
+        padded = normalized + ("=" * (-len(normalized) % 4))
+        try:
+            payload = base64.b64decode(padded, validate=True)
+        except Exception:
+            return ""
+        if not payload:
+            return ""
+
+        mime = "image/jpeg"
+        if payload.startswith(b"\x89PNG\r\n\x1a\n"):
+            mime = "image/png"
+        elif payload[:3] == b"\xff\xd8\xff":
+            mime = "image/jpeg"
+        elif payload.startswith(b"BM"):
+            mime = "image/bmp"
+        elif payload[:4] == b"RIFF" and payload[8:12] == b"WEBP":
+            mime = "image/webp"
+
+        return f"data:{mime};base64,{normalized}"
+
+    def _extract_face_payload_value(self, payload: Any, *, crop: bool = False) -> str:
+        face_keys = (
+            ("crop_face", "cropped_face", "face_crop", "crop", "image", "image_url", "url", "file", "filename")
+            if crop
+            else ("face", "image", "image_url", "url", "file", "filename")
+        )
+        direct_value = self._coerce_face_value(self._extract_nested_value(payload, face_keys))
+        if direct_value:
+            return direct_value
+
+        fallback_keys = ("crop_base65", "crop_base64", "cropped_base64", "base64") if crop else ("base64",)
+        fallback_value = self._extract_nested_value(payload, fallback_keys)
+        if isinstance(fallback_value, dict):
+            return self._extract_face_payload_value(fallback_value, crop=crop)
+        return self._image_data_url(fallback_value)
 
     def _normalize_embedding_value(self, value: Any) -> Any:
         if isinstance(value, tuple):
@@ -248,6 +330,14 @@ class FaceWhitelistService:
                     return text
             return text
         return value
+
+    def _serialize_embedding_value(self, value: Any) -> str:
+        normalized = self._normalize_embedding_value(value)
+        if normalized in (None, "", [], {}):
+            return ""
+        if isinstance(normalized, str):
+            return normalized.strip()
+        return json.dumps(normalized, separators=(",", ":"))
 
     def _coerce_face_value(self, value: Any) -> str:
         if isinstance(value, dict):
@@ -313,29 +403,17 @@ class FaceWhitelistService:
         fields: Dict[str, Any] = self._image_json_fields(image_path)
         payload = self._request_embedding_payload(image_path)
 
-        embedding = None
-        if isinstance(payload, list):
-            embedding = payload
-        elif isinstance(payload, dict):
-            embedding = self._extract_nested_value(
-                payload,
-                ("embedding", "embeddings", "face_embedding", "vector"),
-            )
-        else:
-            embedding = payload
-        embedding = self._normalize_embedding_value(embedding)
+        embedding = self._extract_embedding_value(payload)
         if embedding in (None, "", [], {}):
             raise RuntimeError("Embedding API did not return an embedding for the selected face image.")
 
-        crop_face = self._coerce_face_value(
-            self._extract_nested_value(
-                payload,
-                ("crop_face", "cropped_face", "face_crop", "crop", "image", "image_url", "url", "file", "filename"),
-            )
-        )
+        face = self._extract_face_payload_value(payload, crop=False)
+        crop_face = self._extract_face_payload_value(payload, crop=True)
+        if face:
+            fields["face"] = face
         if crop_face:
             fields["crop_face"] = crop_face
-        fields["embedding"] = embedding
+        fields["embedding"] = self._serialize_embedding_value(embedding)
         return fields
 
     def _multipart_request(
@@ -402,6 +480,12 @@ class FaceWhitelistService:
             if isinstance(value, list) and not value:
                 continue
             cleaned[key] = value
+        if "embedding" in cleaned:
+            embedding_text = self._serialize_embedding_value(cleaned.get("embedding"))
+            if embedding_text:
+                cleaned["embedding"] = embedding_text
+            else:
+                cleaned.pop("embedding", None)
         return cleaned
 
     def list_entries(self) -> List[FaceWhitelistEntry]:
@@ -426,18 +510,12 @@ class FaceWhitelistService:
 
         if image_path:
             image_fields = self._image_request_fields(image_path)
-            upload_data = dict(data)
-            upload_data.update(image_fields)
-            try:
-                response = self._multipart_request("POST", paths, image_path, payload=upload_data)
-                return (
-                    self._extract_message(response, "Whitelist person created successfully."),
-                    self._extract_person_id(response),
-                )
-            except LowSimilarityError:
-                raise
-            except Exception:
-                data.update(image_fields)
+            data.update(image_fields)
+            response = self._request_with_fallback((("POST", path) for path in paths), data=data)
+            return (
+                self._extract_message(response, "Whitelist person created successfully."),
+                self._extract_person_id(response),
+            )
 
         response = self._request_with_fallback((( "POST", path) for path in paths), data=data)
         return (
@@ -483,14 +561,8 @@ class FaceWhitelistService:
             f"/api/v1/face_whitelists/add_image/{person_id}/",
         )
         image_fields = self._image_request_fields(image_path)
-        try:
-            response = self._multipart_request("POST", paths, image_path, payload=image_fields)
-            return self._extract_message(response, "Face image added successfully.")
-        except LowSimilarityError:
-            raise
-        except Exception:
-            response = self._request_with_fallback((( "POST", path) for path in paths), data=image_fields)
-            return self._extract_message(response, "Face image added successfully.")
+        response = self._request_with_fallback((("POST", path) for path in paths), data=image_fields)
+        return self._extract_message(response, "Face image added successfully.")
 
     def delete_template_image(self, person_id: str, template_id: str) -> str:
         response = self._request_with_fallback(

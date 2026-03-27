@@ -364,7 +364,6 @@ class MainWindow(QWidget):
         if path != "/stream/live":
             self._ensure_tv_mode_off()
             self._deactivate_live_view_overlays()
-            self._destroy_live_view()
 
     def _ensure_tv_mode_off(self):
         if self._live_view_widget is not None:

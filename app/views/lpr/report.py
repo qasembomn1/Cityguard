@@ -9,7 +9,6 @@ from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, Signal, QRectF
 from PySide6.QtGui import QColor,QPainter,QPainterPath
 from app.constants._init_ import Constants
 from PySide6.QtWidgets import (
-    QFileDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -28,6 +27,7 @@ from app.store.auth.auth_store import AuthStore
 from app.store.home.lpr.report_store import LprReportStore
 from app.store.home.user.department_store import DepartmentStore as CameraDepartmentStore
 from app.ui.button import PrimeButton
+from app.ui.file_browser_dialog import choose_restricted_save_file_path
 from app.ui.multiselect import PrimeMultiSelect
 from app.ui.select import PrimeSelect
 from app.ui.sidebar_toggle import SidebarToggleButton
@@ -49,7 +49,7 @@ class LprReportPage(QWidget):
         self.report_store = LprReportStore(LprReportService())
 
         self._loaded_department_id: Optional[int] = None
-        self.filters_window_visible = False
+        self.filters_window_visible = True
         self._filters_slide_animation: Optional[QPropertyAnimation] = None
         self.has_searched = False
 
@@ -686,7 +686,12 @@ class LprReportPage(QWidget):
 
         default_name = f"lpr-report-{datetime.now().strftime('%Y%m%d-%H%M%S')}.csv"
         suggested = os.path.join(os.path.expanduser("~"), default_name)
-        path, _ = QFileDialog.getSaveFileName(self, "Export LPR Report", suggested, "CSV Files (*.csv)")
+        path = choose_restricted_save_file_path(
+            self,
+            "Export LPR Report",
+            suggested,
+            "CSV Files (*.csv)",
+        )
         if not path:
             return
 

@@ -11,7 +11,6 @@ from PySide6.QtGui import QPainter,QPainterPath,QColor
 from app.constants._init_ import Constants
 from PySide6.QtWidgets import (
     QApplication,
-    QFileDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -31,6 +30,7 @@ from app.services.auth.auth_service import AuthService
 from app.services.home.devices.client_service import ClientService
 from app.store.auth import AuthStore
 from app.store.home.devices.client_store import ClientStore
+from app.ui.file_browser_dialog import choose_restricted_open_file_path
 from app.ui.toast import PrimeToastHost
 from app.views.home.devices.clients import ClientUsageWs
 from app.widgets.svg_widget import SvgWidget
@@ -665,7 +665,7 @@ class ActivationPage(QWidget):
         self._toast_success("Copied", "Device ID copied to clipboard.")
 
     def _activate_server(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
+        path = choose_restricted_open_file_path(
             self,
             "Select Server Activation Key",
             "",
@@ -689,7 +689,7 @@ class ActivationPage(QWidget):
         if client is None:
             return
 
-        path, _ = QFileDialog.getOpenFileName(
+        path = choose_restricted_open_file_path(
             self,
             "Select Activation Key",
             "",
@@ -781,4 +781,3 @@ class ActivationPage(QWidget):
         path.addRect(QRectF(self.rect()))
         p.fillPath(path, QColor(Constants.DARK_BG))   # dark bg — cards float above it
         super().paintEvent(event)
-

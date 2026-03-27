@@ -9,9 +9,9 @@ import tempfile
 import urllib.parse
 from dataclasses import dataclass, field
 from math import isqrt
-from typing import TYPE_CHECKING, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from PySide6.QtCore import QEvent, QMimeData, QObject, QPoint, QRectF, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QEvent, QMimeData, QObject, QPoint, QRectF, QSize, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PySide6.QtGui import QAction, QColor, QDrag, QIcon, QPainter, QPainterPath, QPen, QPixmap, QRegion
 from PySide6.QtWidgets import (
@@ -434,6 +434,49 @@ class MonitorWsClient(QObject):
                 cam_id = _as_int(item.get("cam_id"), 0)
                 if cam_id:
                     self.faceResult.emit(cam_id, item)
+
+
+class LiveViewDataWorker(QObject):
+    finished = Signal(object)
+    failed = Signal(str)
+
+    def run(self) -> None:
+        try:
+            from app.services.home.devices.camera_service import (
+                CameraService as DevicesCameraService,
+            )
+            from app.services.home.devices.client_service import (
+                ClientService as DevicesClientService,
+            )
+            from app.services.home.user.department_service import DepartmentService
+
+            client_service = DevicesClientService()
+            camera_service = DevicesCameraService()
+            department_service = DepartmentService()
+            screen_service = ScreenService()
+
+            clients = client_service.get_all_clients()
+            cameras = camera_service.list_cameras(None)
+            departments = department_service.list_departments()
+
+            screen_error = ""
+            try:
+                screens = screen_service.list_screens()
+            except Exception as exc:
+                screens = []
+                screen_error = str(exc)
+
+            self.finished.emit(
+                {
+                    "clients": clients,
+                    "cameras": cameras,
+                    "departments": departments,
+                    "screens": screens,
+                    "screen_error": screen_error,
+                }
+            )
+        except Exception as exc:
+            self.failed.emit(str(exc))
 
 
 class ResultCard(QFrame):
@@ -1852,7 +1895,7 @@ class GridCell(QFrame):
         else:
             btn.setText(fallback_text)
 
-    def set_camera(self, camera: Optional["DevicesCamera"]) -> None:
+    def set_camera(self, camera: Optional["DevicesCamera"], auto_replay: bool = True) -> None:
         previous_id = self.camera.id if self.camera else None
         next_id = camera.id if camera else None
         if previous_id != next_id:
@@ -1860,7 +1903,7 @@ class GridCell(QFrame):
             self._use_main_stream = False
         self.camera = camera
         self.refresh()
-        if previous_id != next_id and camera is not None:
+        if previous_id != next_id and camera is not None and auto_replay:
             self.replay_stream()
 
     def set_main_stream(self, enabled: bool) -> None:
@@ -2428,6 +2471,10 @@ class CameraDashboard(QMainWindow):
         self._content_min_width = 240
         self._camera_sidebar_width = 460
         self._queue_sidebar_width = 460
+        self._data_load_thread: Optional[QThread] = None
+        self._data_load_worker: Optional[LiveViewDataWorker] = None
+        self._data_loading = False
+        self._data_loaded = False
         self.ws_client = MonitorWsClient(self)
         self.ws_client.lprResult.connect(self._on_lpr_result)
         self.ws_client.faceResult.connect(self._on_face_result)
@@ -2437,12 +2484,9 @@ class CameraDashboard(QMainWindow):
         self._build_ui()
         self.toast = PrimeToastHost(self)
         self._apply_theme()
-        self._load_api_data()
-        self.populate_camera_tree()
-        self.populate_config_combo()
         self.rebuild_grid()
-        self._apply_default_screen_selection()
-        self._apply_startup_layout()
+        self._prepare_initial_state()
+        QTimer.singleShot(0, self._load_api_data)
 
     # ------------------------------ UI ------------------------------
     def _build_ui(self):
@@ -3038,35 +3082,100 @@ class CameraDashboard(QMainWindow):
         )
 
     # ------------------------------ data ------------------------------
+    def _prepare_initial_state(self) -> None:
+        self.status_label.setText("Loading live view...")
+        self.search.setEnabled(False)
+        self.config_combo.setEnabled(False)
+        self.camera_tree.set_sections([], empty_message="Loading cameras and screens...")
+        self.config_combo.blockSignals(True)
+        self.config_combo.set_options([{"label": "Loading screens...", "value": MAIN_SCREEN_OPTION}])
+        self.config_combo.set_value(MAIN_SCREEN_OPTION)
+        self.config_combo.blockSignals(False)
+
     def _load_api_data(self):
-        try:
-            self.client_store.load()
-            self.department_store.get_camera_for_user(None, silent=True)
-        except Exception as exc:
-            self.clients = []
-            self.cameras = []
-            self.departments = []
-            self.client_map = {}
-            self.camera_map = {}
-            self.saved_configs = []
-            self.status_label.setText(f"Failed to load cameras: {exc}")
+        if self._data_loading or self._data_loaded:
             return
 
-        self.clients = list(self.client_store.clients)
-        self.cameras = list(self.department_store.cameras)
-        self.departments = list(self.department_crud_store.load())
+        self._data_loading = True
+        self.status_label.setText("Loading live view...")
+        self.search.setEnabled(False)
+        self.config_combo.setEnabled(False)
+
+        thread = QThread(self)
+        worker = LiveViewDataWorker()
+        worker.moveToThread(thread)
+
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_api_data_loaded)
+        worker.failed.connect(self._on_api_data_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_data_load_worker)
+
+        self._data_load_thread = thread
+        self._data_load_worker = worker
+        thread.start()
+
+    def _on_api_data_loaded(self, payload: object) -> None:
+        self._data_loading = False
+        self._data_loaded = True
+
+        data = payload if isinstance(payload, dict) else {}
+        clients = list(data.get("clients") or [])
+        cameras = list(data.get("cameras") or [])
+        departments = list(data.get("departments") or [])
+        screens = list(data.get("screens") or [])
+        screen_error = str(data.get("screen_error") or "").strip()
+
+        self.clients = clients
+        self.cameras = cameras
+        self.departments = departments
         self.client_map = {c.id: c for c in self.clients}
         self.camera_map = {c.id: c for c in self.cameras}
+        self.saved_configs = [self._saved_config_from_screen(item) for item in screens]
 
-        try:
-            self.screen_store.load()
-            self.saved_configs = [self._saved_config_from_screen(item) for item in self.screen_store.screens]
+        self.client_store.clients = list(self.clients)
+        self.department_store.cameras = list(self.cameras)
+        self.department_crud_store.departments = list(self.departments)
+        self.screen_store.screens = list(screens)
+
+        self.search.setEnabled(True)
+        self.config_combo.setEnabled(True)
+        self.populate_camera_tree()
+        self.populate_config_combo()
+        self._apply_default_screen_selection()
+        self._apply_startup_layout()
+
+        if screen_error:
+            self.status_label.setText(f"Loaded {len(self.cameras)} camera(s). Screen layouts unavailable.")
+        else:
             self.status_label.setText(
                 f"Loaded {len(self.cameras)} camera(s) and {len(self.saved_configs)} screen layout(s)"
             )
-        except Exception:
-            self.saved_configs = []
-            self.status_label.setText(f"Loaded {len(self.cameras)} camera(s). Screen layouts unavailable.")
+
+    def _on_api_data_failed(self, text: str) -> None:
+        self._data_loading = False
+        self._data_loaded = False
+        self.clients = []
+        self.cameras = []
+        self.departments = []
+        self.saved_configs = []
+        self.client_map = {}
+        self.camera_map = {}
+        self.search.setEnabled(True)
+        self.config_combo.setEnabled(False)
+        self.config_combo.blockSignals(True)
+        self.config_combo.set_options([{"label": "Main Screen", "value": MAIN_SCREEN_OPTION}])
+        self.config_combo.set_value(MAIN_SCREEN_OPTION)
+        self.config_combo.blockSignals(False)
+        self.camera_tree.set_sections([], empty_message=text or "Unable to load live view cameras.")
+        self.status_label.setText(f"Failed to load cameras: {text}")
+
+    def _clear_data_load_worker(self) -> None:
+        self._data_load_thread = None
+        self._data_load_worker = None
 
     def _saved_config_from_screen(self, screen: ScreenResponse) -> SavedScreenConfig:
         cameras = [
@@ -3408,11 +3517,13 @@ class CameraDashboard(QMainWindow):
 
         if preserve_existing:
             for idx, cam in enumerate(existing_cameras[: len(self.screen_cells)]):
-                self.screen_cells[idx].set_camera(cam)
+                self.screen_cells[idx].set_camera(cam, auto_replay=False)
         for cell in self.screen_cells:
             cell.set_tv_mode(self.is_tv_mode)
 
         self.refresh_grid_visibility()
+        if preserve_existing:
+            self._restart_visible_streams_staggered()
         self.update_save_button_state()
         self._position_exit_tv_button()
 
@@ -3431,10 +3542,11 @@ class CameraDashboard(QMainWindow):
         if not visible_cameras:
             return
         for cell, camera in zip(self.screen_cells, visible_cameras):
-            cell.set_camera(camera)
+            cell.set_camera(camera, auto_replay=False)
         self.focused_camera_id = None
         self.queue_camera_id = None
         self.refresh_grid_visibility()
+        self._restart_visible_streams_staggered()
         self.status_label.setText(f"Loaded {min(len(visible_cameras), len(self.screen_cells))} startup camera(s)")
 
     def refresh_grid_visibility(self):
@@ -3534,6 +3646,11 @@ class CameraDashboard(QMainWindow):
                 continue
             use_main = bool(force_main_for_all or (self.focused_camera_id is not None and cell.camera.id == self.focused_camera_id))
             cell.set_main_stream(use_main)
+
+    def _restart_visible_streams_staggered(self, base_delay_ms: int = 0, step_ms: int = 90) -> None:
+        visible_cells = [cell for cell in self.screen_cells if cell.camera is not None and cell.isVisible()]
+        for index, cell in enumerate(visible_cells):
+            cell.replay_stream(base_delay_ms + (index * step_ms))
 
     def on_drop_camera(self, index: int, cam_id: int):
         camera = self.camera_map.get(cam_id)
@@ -3757,9 +3874,10 @@ class CameraDashboard(QMainWindow):
             index = assignment["index"]
             camera = self.camera_map.get(assignment["camera_id"])
             if 0 <= index < len(self.screen_cells) and camera:
-                self.screen_cells[index].set_camera(camera)
+                self.screen_cells[index].set_camera(camera, auto_replay=False)
         self.focused_camera_id = None
         self.refresh_grid_visibility()
+        self._restart_visible_streams_staggered()
         self.status_label.setText(f"Loaded {self.selected_grid_size}x{self.selected_grid_size} configuration")
         self.update_save_button_state()
 
@@ -3772,12 +3890,16 @@ class CameraDashboard(QMainWindow):
 
     def hideEvent(self, event):
         self.deactivate_overlays()
+        for cell in self.screen_cells:
+            cell._stop_stream()
         super().hideEvent(event)
 
     def showEvent(self, event):
         super().showEvent(event)
         self._apply_fixed_sidebar_split()
         QTimer.singleShot(0, self._apply_fixed_sidebar_split)
+        if not self._data_loaded and not self._data_loading:
+            QTimer.singleShot(0, self._load_api_data)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

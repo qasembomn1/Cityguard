@@ -17,7 +17,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDoubleSpinBox,
-    QFileDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -50,6 +49,11 @@ from app.store.home.user.department_store import DepartmentStore as CameraDepart
 from app.ui.button import PrimeButton
 from app.ui.checkbox import PrimeCheckBox
 from app.ui.dialog import PrimeDialog
+from app.ui.file_browser_dialog import (
+    choose_restricted_open_file_path,
+    choose_restricted_save_file_path,
+    device_image_browser_roots,
+)
 from app.ui.input import PrimeInput
 from app.ui.multiselect import PrimeMultiSelect
 from app.ui.select import PrimeSelect
@@ -742,7 +746,7 @@ class FaceSearchPage(QWidget):
         self.net = QNetworkAccessManager(self)
 
         self.filter_panel_open = False
-        self.filters_window_visible = False
+        self.filters_window_visible = True
         self.grid_view = True
         self.grid_columns = 3
         self.rows_per_page = 20
@@ -1804,11 +1808,12 @@ class FaceSearchPage(QWidget):
         self.refresh()
 
     def _choose_reference_image(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
+        path = choose_restricted_open_file_path(
             self,
             "Choose Face Image",
             "",
             "Images (*.png *.jpg *.jpeg *.bmp *.webp)",
+            extra_roots=device_image_browser_roots(),
         )
         if path:
             self._load_embedding_from_file(path)
@@ -2250,7 +2255,7 @@ class FaceSearchPage(QWidget):
     def export_csv(self) -> None:
         if not self.search_store.results:
             return
-        path, _ = QFileDialog.getSaveFileName(
+        path = choose_restricted_save_file_path(
             self,
             "Export Face Search",
             os.path.expanduser("~/FaceSearch.csv"),

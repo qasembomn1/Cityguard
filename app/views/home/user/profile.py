@@ -10,6 +10,7 @@ from PySide6.QtGui import QIcon,QColor,QPainter,QPainterPath
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -359,7 +360,10 @@ class ProfilePage(QWidget):
             ]
         )
         self.activity_table.table.horizontalHeader().setStretchLastSection(True)
+        self.activity_table.table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+        self.activity_table.table.verticalHeader().setMinimumSectionSize(50)
         self.activity_table.set_cell_widget_factory("action", self._activity_action_widget)
+        self.activity_table.set_cell_widget_factory("detail", self._activity_detail_widget)
         body_layout.addWidget(self.activity_table)
 
         layout.addWidget(body)
@@ -555,6 +559,16 @@ class ProfilePage(QWidget):
         text = str(row.get("action") or "-").strip()
         return self._activity_chip(text or "-", "#1d4ed8", "#dbeafe", "#2563eb")
 
+    def _activity_detail_widget(self, row: dict) -> QWidget:
+        label = QLabel(str(row.get("detail") or "-"))
+        label.setWordWrap(False)
+        label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        label.setToolTip(label.text())
+        label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        label.setStyleSheet("color:#e2e8f0; padding:0;")
+        return label
+
     def _activity_chip(self, text: str, bg: str, fg: str, border: str) -> QWidget:
         wrapper = QWidget()
         layout = QHBoxLayout(wrapper)
@@ -720,4 +734,3 @@ class ProfilePage(QWidget):
         path.addRect(QRectF(self.rect()))
         p.fillPath(path, QColor(Constants.DARK_BG))   # dark bg — cards float above it
         super().paintEvent(event)
-

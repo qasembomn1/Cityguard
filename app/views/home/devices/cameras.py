@@ -1190,10 +1190,10 @@ class CameraTypeManagerDialog(PrimeDialog):
                 PrimeTableColumn("network_url", "Network URL", width=240),
                 PrimeTableColumn(
                     "actions",
-                    "",
+                    "Actions",
                     sortable=False,
                     searchable=False,
-                    width=80,
+                    width=96,
                     alignment=Qt.AlignCenter,
                 ),
             ]
@@ -1242,6 +1242,7 @@ class CameraTypeManagerDialog(PrimeDialog):
         bg: str,
         border: str,
         size: int = 34,
+        fallback_text: str = "",
     ) -> QToolButton:
         btn = QToolButton()
         btn.setToolTip(tooltip)
@@ -1252,34 +1253,57 @@ class CameraTypeManagerDialog(PrimeDialog):
             btn.setIcon(QIcon(icon_path))
             icon_px = max(12, size - 16)
             btn.setIconSize(QSize(icon_px, icon_px))
+        else:
+            btn.setText(fallback_text)
         btn.setStyleSheet(f"""
             QToolButton {{
                 background: {bg};
+                color: #f8fafc;
                 border: 1px solid {border};
                 border-radius: {size // 2}px;
+                font-size: 15px;
+                font-weight: 700;
             }}
             QToolButton:hover {{
                 border-color: #f8fafc;
             }}
+            QToolButton:pressed {{
+                background: {border};
+            }}
             QToolButton:disabled {{
-                background: #2b2d33;
+                color: #7b8090;
                 border-color: #3b3f47;
+                background: #2b2d33;
             }}
         """)
         return btn
 
     def _action_widget(self, camera_type: CameraType) -> QWidget:
         box = QWidget()
+        box.setFixedWidth(72)
+        box.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
         layout = QHBoxLayout(box)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
         layout.setAlignment(Qt.AlignCenter)
 
-        edit_btn = self._icon_tool_btn("edit.svg", "Edit", "#3578f6", "#4e8cff")
+        edit_btn = self._icon_tool_btn(
+            "edit.svg",
+            "Edit Camera Type",
+            "#3578f6",
+            "#4e8cff",
+            fallback_text="✎",
+        )
         edit_btn.clicked.connect(lambda: self.open_edit_dialog(camera_type))
         layout.addWidget(edit_btn)
 
-        delete_btn = self._icon_tool_btn("trash.svg", "Delete", "#ef4444", "#ff6464")
+        delete_btn = self._icon_tool_btn(
+            "trash.svg",
+            "Delete Camera Type",
+            "#ef4444",
+            "#ff6464",
+            fallback_text="⌫",
+        )
         delete_btn.clicked.connect(lambda: self.handle_delete(camera_type))
         layout.addWidget(delete_btn)
         return box
@@ -1626,6 +1650,8 @@ class CameraFormDialog(PrimeDialog):
         if self.camera:
             self._load_camera(self.camera)
         else:
+            self.camera_username_edit.setText("admin")
+            self.camera_password_edit.setText("bomn1234")
             self._set_combo_value(self.client_3_combo, self._default_recorder_client_id())
 
         self._toggle_type_fields()
@@ -1668,6 +1694,8 @@ class CameraFormDialog(PrimeDialog):
         process_type = str(getattr(self.camera, "process_type", "") or "").strip().lower()
         if process_type in {"face", "lpr", "recorder"}:
             return process_type
+        if self.camera is None:
+            return "recorder"
         return "lpr"
 
     def _set_field_label(self, field_block: QWidget, text: str) -> None:

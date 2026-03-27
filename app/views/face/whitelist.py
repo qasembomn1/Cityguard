@@ -11,7 +11,6 @@ from app.constants._init_ import Constants
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
-    QFileDialog,
     QDialog,
     QDoubleSpinBox,
     QFrame,
@@ -41,6 +40,7 @@ from app.store.home.face.face_whitelist_store import FaceWhitelistStore
 from app.store.home.user.department_store import DepartmentStore as CameraDepartmentStore
 from app.ui.button import PrimeButton
 from app.ui.dialog import PrimeDialog
+from app.ui.file_browser_dialog import choose_restricted_open_file_path, device_image_browser_roots
 from app.ui.input import PrimeInput
 from app.ui.multiselect import PrimeMultiSelect
 from app.ui.select import PrimeSelect
@@ -214,8 +214,8 @@ class AddImageDialog(PrimeDialog):
         super().__init__(
             title="Add Image",
             parent=parent,
-            width=520,
-            height=440,
+            width=620,
+            height=560,
             ok_text="Add",
             cancel_text="Done",
         )
@@ -225,28 +225,41 @@ class AddImageDialog(PrimeDialog):
 
         content = QWidget()
         root = QVBoxLayout(content)
-        root.setContentsMargins(18, 18, 18, 18)
-        root.setSpacing(12)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(14)
+
+        summary_card = QFrame()
+        summary_card.setObjectName("faceAddImageSummary")
+        summary_layout = QVBoxLayout(summary_card)
+        summary_layout.setContentsMargins(14, 12, 14, 12)
+        summary_layout.setSpacing(4)
+        root.addWidget(summary_card)
 
         self.info_label = QLabel("Person: -")
         self.info_label.setObjectName("faceDialogInfo")
-        root.addWidget(self.info_label)
+        self.info_label.setWordWrap(True)
+        summary_layout.addWidget(self.info_label)
 
         self.count_label = QLabel("Current templates: 0")
         self.count_label.setObjectName("faceDialogHint")
-        root.addWidget(self.count_label)
+        summary_layout.addWidget(self.count_label)
 
         self.preview = QLabel("No image selected")
         self.preview.setObjectName("faceUploadPreview")
         self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview.setMinimumHeight(220)
+        self.preview.setFixedHeight(220)
         root.addWidget(self.preview)
+
+        self.path_label = QLabel("Selected file: none")
+        self.path_label.setObjectName("faceDialogHint")
+        self.path_label.setWordWrap(True)
+        root.addWidget(self.path_label)
 
         picker_actions = QHBoxLayout()
         picker_actions.setSpacing(8)
         root.addLayout(picker_actions)
 
-        self.choose_btn = PrimeButton("Choose Image", variant="primary", size="sm", width=132)
+        self.choose_btn = PrimeButton("Choose Image", variant="primary", size="sm", width=144)
         self.choose_btn.clicked.connect(self._pick_image)
         picker_actions.addWidget(self.choose_btn)
 
@@ -256,15 +269,21 @@ class AddImageDialog(PrimeDialog):
 
         picker_actions.addStretch(1)
 
-        self.set_content(content, fill_height=True)
+        self.set_content(content)
         self.ok_button.clicked.disconnect()
         self.ok_button.clicked.connect(self._submit)
+        self.set_ok_enabled(False)
 
         content.setStyleSheet(
             """
+            QFrame#faceAddImageSummary {
+                background: #11161d;
+                border: 1px solid #2a3443;
+                border-radius: 14px;
+            }
             QLabel#faceDialogInfo {
                 color: #f8fafc;
-                font-size: 14px;
+                font-size: 15px;
                 font-weight: 700;
             }
             QLabel#faceDialogHint {
@@ -295,13 +314,17 @@ class AddImageDialog(PrimeDialog):
         self._image_path = ""
         self.preview.setPixmap(QPixmap())
         self.preview.setText("No image selected")
+        self.path_label.setText("Selected file: none")
+        self.set_ok_enabled(False)
 
     def set_selected_image(self, image_path: str) -> None:
         self._image_path = image_path
+        self.path_label.setText(f"Selected file: {os.path.basename(image_path) or image_path}")
         pix = QPixmap(image_path)
         if pix.isNull():
             self.preview.setPixmap(QPixmap())
             self.preview.setText(os.path.basename(image_path) or "Selected image")
+            self.set_ok_enabled(True)
             return
         self.preview.setPixmap(
             pix.scaled(
@@ -311,13 +334,15 @@ class AddImageDialog(PrimeDialog):
             )
         )
         self.preview.setText("")
+        self.set_ok_enabled(True)
 
     def _pick_image(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
+        path = choose_restricted_open_file_path(
             self,
             "Choose Face Image",
             "",
             "Images (*.png *.jpg *.jpeg *.bmp *.webp)",
+            extra_roots=device_image_browser_roots(),
         )
         if path:
             self.set_selected_image(path)
@@ -648,11 +673,12 @@ class PersonFormDialog(PrimeDialog):
         self.preview_label.setText("Editing details only")
 
     def _pick_image(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
+        path = choose_restricted_open_file_path(
             self,
             "Choose Face Image",
             "",
             "Images (*.png *.jpg *.jpeg *.bmp *.webp)",
+            extra_roots=device_image_browser_roots(),
         )
         if path:
             self._set_image(path)
@@ -743,6 +769,7 @@ class TemplatesDialog(PrimeDialog):
         self._entry: Optional[FaceWhitelistEntry] = None
         self._templates: List[FaceWhitelistTemplate] = []
         self._can_manage = False
+        self._rendered_columns = 0
 
         content = QWidget()
         root = QVBoxLayout(content)
@@ -768,9 +795,11 @@ class TemplatesDialog(PrimeDialog):
         root.addWidget(self.scroll, 1)
 
         self.content = QWidget()
+        self.content.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.grid = QGridLayout(self.content)
         self.grid.setContentsMargins(0, 0, 0, 0)
         self.grid.setSpacing(12)
+        self.grid.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.scroll.setWidget(self.content)
 
         self.empty_label = QLabel("No templates available.")
@@ -809,6 +838,7 @@ class TemplatesDialog(PrimeDialog):
         self._entry = entry
         self._templates = list(templates)
         self._can_manage = can_manage
+        self._rendered_columns = 0
         self.summary_label.setText(
             f"Person: {entry.name or 'Unknown'} | Total images: {len(templates)}"
         )
@@ -817,27 +847,39 @@ class TemplatesDialog(PrimeDialog):
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
-        if self._templates:
+        if self._templates and self._column_count() != self._rendered_columns:
             self._rebuild_grid()
 
     def _clear_grid(self) -> None:
         while self.grid.count():
             item = self.grid.takeAt(0)
+            child_layout = item.layout()
             widget = item.widget()
             if widget is not None:
+                widget.hide()
+                widget.setParent(None)
                 widget.deleteLater()
+            elif child_layout is not None:
+                while child_layout.count():
+                    child_item = child_layout.takeAt(0)
+                    child_widget = child_item.widget()
+                    if child_widget is not None:
+                        child_widget.hide()
+                        child_widget.setParent(None)
+                        child_widget.deleteLater()
 
     def _column_count(self) -> int:
         viewport = self.scroll.viewport()
         width = viewport.width() if viewport is not None else self.width()
         usable_width = max(320, width - 8)
-        target_card_width = 230
+        target_card_width = 320
         return max(1, usable_width // target_card_width)
 
     def _rebuild_grid(self) -> None:
         self._clear_grid()
 
         if not self._templates:
+            self._rendered_columns = 0
             self.empty_label.show()
             self.content.hide()
             return
@@ -845,12 +887,18 @@ class TemplatesDialog(PrimeDialog):
         self.empty_label.hide()
         self.content.show()
         columns = self._column_count()
+        self._rendered_columns = columns
+        viewport = self.scroll.viewport()
+        viewport_width = viewport.width() if viewport is not None else self.width()
+        usable_width = max(320, viewport_width - 8)
+        card_width = max(220, (usable_width - (self.grid.spacing() * max(0, columns - 1))) // columns)
 
         for index, template in enumerate(self._templates):
             card = QFrame()
             card.setObjectName("faceTemplateCard")
             card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             card.setMinimumWidth(0)
+            card.setMaximumWidth(card_width)
             card_layout = QVBoxLayout(card)
             card_layout.setContentsMargins(10, 10, 10, 10)
             card_layout.setSpacing(8)
@@ -888,6 +936,7 @@ class TemplatesDialog(PrimeDialog):
 
         for column in range(columns):
             self.grid.setColumnStretch(column, 1)
+        self.content.updateGeometry()
 
 
 class FaceRegistryPage(QWidget):
@@ -958,44 +1007,36 @@ class FaceRegistryPage(QWidget):
         content_stack.addWidget(body)
 
         content_layout = QVBoxLayout(body)
-        content_layout.setContentsMargins(18, 18, 18, 18)
+        content_layout.setContentsMargins(18, 16, 18, 18)
         content_layout.setSpacing(14)
 
-        hero = QHBoxLayout()
-        hero.setSpacing(10)
-        content_layout.addLayout(hero)
-
-        hero_text = QVBoxLayout()
-        hero_text.setContentsMargins(0, 0, 0, 0)
-        hero_text.setSpacing(4)
-        hero.addLayout(hero_text, 1)
+        title_row = QVBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(2)
+        content_layout.addLayout(title_row)
 
         page_title = QLabel(self.registry_title_text)
         page_title.setObjectName("facePageTitle")
-        hero_text.addWidget(page_title)
+        title_row.addWidget(page_title)
 
         page_hint = QLabel(self.registry_hint_text)
         page_hint.setObjectName("facePageHint")
         page_hint.setWordWrap(True)
-        hero_text.addWidget(page_hint)
+        title_row.addWidget(page_hint)
 
         toolbar = QHBoxLayout()
-        toolbar.setSpacing(8)
+        toolbar.setSpacing(10)
         content_layout.addLayout(toolbar)
 
-        self.new_btn = PrimeButton("New Person", variant="primary", size="sm")
+        self.new_btn = PrimeButton("+ New", variant="primary", size="sm", width=110)
         self.new_btn.clicked.connect(self._prepare_create_mode)
         toolbar.addWidget(self.new_btn)
-
-        self.reload_btn = PrimeButton("Reload", variant="secondary", size="sm")
-        self.reload_btn.clicked.connect(lambda: self.whitelist_store.load())
-        toolbar.addWidget(self.reload_btn)
 
         toolbar.addStretch(1)
 
         self.search_edit = PrimeInput(placeholder_text="Search by name, gender, color, note, or camera...")
         self.search_edit.setObjectName("faceSearchInput")
-        self.search_edit.setMaximumWidth(360)
+        self.search_edit.setMaximumWidth(340)
         self.search_edit.textChanged.connect(self._on_search_changed)
         toolbar.addWidget(self.search_edit)
 

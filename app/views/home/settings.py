@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import re
-from datetime import datetime
 from typing import Any
 
 from PySide6.QtCore import QDate, Qt, QTimer, Signal,QRectF
@@ -99,7 +98,6 @@ class SettingsPage(QWidget):
     navigate = Signal(str)
 
     _TAB_DEFS = (
-        ("overview", "Overview", "settings.svg"),
         ("record", "Record", "report.svg"),
         ("alarm", "Alarm", "notification.svg"),
         ("repeated", "Repeated", "calendar.svg"),
@@ -111,8 +109,6 @@ class SettingsPage(QWidget):
         self.toast = PrimeToastHost(self)
         self.store = SettingsStore(SettingsService())
         self._nav_buttons: dict[str, QToolButton] = {}
-        self._card_values: dict[str, QLabel] = {}
-        self._last_sync_label: QLabel | None = None
         self._server_eth_ips_layout: QVBoxLayout | None = None
         self._server_alert_frame: QFrame | None = None
         self._server_alert_title: QLabel | None = None
@@ -121,7 +117,7 @@ class SettingsPage(QWidget):
         self._init_fields()
         self._build_ui()
         self._apply_style()
-        self._set_active_tab("overview")
+        self._set_active_tab("record")
         QTimer.singleShot(0, self.reload_all_settings)
 
     def _init_fields(self) -> None:
@@ -228,7 +224,6 @@ class SettingsPage(QWidget):
         self._stack = QStackedWidget()
         main_layout.addWidget(self._stack, 1)
 
-        self._stack.addWidget(self._wrap_page(self._build_overview_tab()))
         self._stack.addWidget(self._wrap_page(self._build_record_tab()))
         self._stack.addWidget(self._wrap_page(self._build_alarm_tab()))
         self._stack.addWidget(self._wrap_page(self._build_repeated_tab()))
@@ -465,106 +460,6 @@ class SettingsPage(QWidget):
             }}
             """
         )
-
-    def _build_overview_tab(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(18)
-
-        layout.addWidget(
-            self._hero_card(
-                "Settings Overview",
-                "Tune system behavior from one place. This page mirrors the control-center layout while staying bound to the available settings APIs.",
-                "Control Center",
-                "settings.svg",
-                "#3b82f6",
-            )
-        )
-
-        metrics = QGridLayout()
-        metrics.setHorizontalSpacing(14)
-        metrics.setVerticalSpacing(14)
-        layout.addLayout(metrics)
-
-        metrics.addWidget(
-            self._metric_card(
-                "Record Quality",
-                "Current capture quality profile.",
-                "#2563eb",
-                "record_quality",
-            ),
-            0,
-            0,
-        )
-        metrics.addWidget(
-            self._metric_card(
-                "Repeated Trigger",
-                "How repeated vehicles are detected.",
-                "#7c3aed",
-                "repeated_rule",
-            ),
-            0,
-            1,
-        )
-        metrics.addWidget(
-            self._metric_card(
-                "Blacklist Alarm",
-                "Whether blacklist alerts are active.",
-                "#f97316",
-                "alarm_status",
-            ),
-            1,
-            0,
-        )
-        metrics.addWidget(
-            self._metric_card(
-                "Backup Path",
-                "Configured record backup destination.",
-                "#14b8a6",
-                "backup_path",
-            ),
-            1,
-            1,
-        )
-
-        action_card = QFrame()
-        action_card.setObjectName("settingsActionCard")
-        action_layout = QVBoxLayout(action_card)
-        action_layout.setContentsMargins(18, 18, 18, 18)
-        action_layout.setSpacing(12)
-        layout.addWidget(action_card)
-
-        action_title = QLabel("Quick Actions")
-        action_title.setObjectName("settingsPanelTitle")
-        action_layout.addWidget(action_title)
-
-        action_subtitle = QLabel("Jump directly to a section and save changes without leaving the page.")
-        action_subtitle.setObjectName("settingsPanelSubtitle")
-        action_subtitle.setWordWrap(True)
-        action_layout.addWidget(action_subtitle)
-
-        button_row = QHBoxLayout()
-        button_row.setSpacing(10)
-        action_layout.addLayout(button_row)
-
-        for label, variant, tab_id in (
-            ("Open Record", "danger", "record"),
-            ("Open Alarm", "warning", "alarm"),
-            ("Open Repeated", "help", "repeated"),
-            ("Open Network", "info", "server"),
-        ):
-            btn = PrimeButton(label, variant=variant, size="sm")
-            btn.clicked.connect(lambda checked=False, value=tab_id: self._set_active_tab(value))
-            button_row.addWidget(btn)
-        button_row.addStretch(1)
-
-        self._last_sync_label = QLabel("Last sync: waiting for data")
-        self._last_sync_label.setObjectName("settingsPanelSubtitle")
-        action_layout.addWidget(self._last_sync_label)
-
-        layout.addStretch(1)
-        return page
 
     def _build_record_tab(self) -> QWidget:
         page = QWidget()
@@ -960,35 +855,6 @@ class SettingsPage(QWidget):
         subtitle.setWordWrap(True)
         text_col.addWidget(subtitle)
 
-        return card
-
-    def _metric_card(self, title_text: str, hint_text: str, accent: str, key: str) -> QFrame:
-        card = QFrame()
-        card.setObjectName("settingsMetricCard")
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(8)
-
-        stripe = QFrame()
-        stripe.setFixedHeight(4)
-        stripe.setStyleSheet(f"background: {accent}; border-radius: 2px;")
-        layout.addWidget(stripe)
-
-        title = QLabel(title_text)
-        title.setObjectName("settingsMetricTitle")
-        layout.addWidget(title)
-
-        value = QLabel("--")
-        value.setObjectName("settingsMetricValue")
-        value.setWordWrap(True)
-        layout.addWidget(value)
-        self._card_values[key] = value
-
-        hint = QLabel(hint_text)
-        hint.setObjectName("settingsMetricHint")
-        hint.setWordWrap(True)
-        layout.addWidget(hint)
-        layout.addStretch(1)
         return card
 
     def _form_panel(self, title_text: str, subtitle_text: str) -> QFrame:
@@ -1703,11 +1569,10 @@ class SettingsPage(QWidget):
 
     def _set_active_tab(self, tab_id: str) -> None:
         index_map = {
-            "overview": 0,
-            "record": 1,
-            "alarm": 2,
-            "repeated": 3,
-            "server": 4,
+            "record": 0,
+            "alarm": 1,
+            "repeated": 2,
+            "server": 3,
         }
         if tab_id not in index_map:
             return
@@ -1827,37 +1692,15 @@ class SettingsPage(QWidget):
         self.record_db_limit_days.setValue(setting.db_limit_days)
         self.record_backup_days.setValue(setting.backup_days)
         self.record_backup_path.setText(setting.backup_path)
-        self._refresh_overview_cards()
 
     def _apply_alarm_setting(self, setting: AlarmSetting) -> None:
         self.alarm_blacklist_date.set_value(setting.blacklist_date)
         self.alarm_repeated_date.set_value(setting.repeated_date)
         self._set_combo_value(self.alarm_blacklist_alarm, bool(setting.blacklist_alarm))
-        self._refresh_overview_cards()
 
     def _apply_repeated_setting(self, setting: RepeatedSetting) -> None:
         self.repeated_cars.setValue(setting.repeated_cars)
         self.repeated_in_time.setValue(setting.in_time)
-        self._refresh_overview_cards()
-
-    def _refresh_overview_cards(self) -> None:
-        record = self.store.record_setting
-        alarm = self.store.alarm_setting
-        repeated = self.store.repeated_setting
-
-        quality = (record.quality or "normal").strip().title()
-        self._card_values["record_quality"].setText(quality or "Normal")
-
-        repeated_text = f"{repeated.repeated_cars} cars in {repeated.in_time} min"
-        self._card_values["repeated_rule"].setText(repeated_text)
-
-        self._card_values["alarm_status"].setText("Enabled" if alarm.blacklist_alarm else "Disabled")
-        self._card_values["backup_path"].setText(record.backup_path or "Not configured")
-
-        if self._last_sync_label is not None:
-            self._last_sync_label.setText(
-                f"Last sync: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-            )
 
     def _load_record_setting(self, notify: bool = False) -> bool:
         setting = self.store.load_record_setting()

@@ -388,7 +388,7 @@ class LprRepeatedPage(QWidget):
 
         self._loaded_department_id: Optional[int] = None
         self.filter_panel_open = False
-        self.filters_window_visible = False
+        self.filters_window_visible = True
         self._filters_slide_animation: Optional[QPropertyAnimation] = None
         self._filter_sections: list[FilterAccordionSection] = []
         self.rows_per_page = 50

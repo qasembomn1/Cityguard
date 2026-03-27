@@ -49,18 +49,12 @@ class FaceBlacklistService(FaceWhitelistService):
 
         if image_path:
             image_fields = self._image_request_fields(image_path)
-            upload_data = dict(data)
-            upload_data.update(image_fields)
-            try:
-                response = self._multipart_request("POST", paths, image_path, payload=upload_data)
-                return (
-                    self._extract_message(response, "Blacklist person created successfully."),
-                    self._extract_person_id(response),
-                )
-            except LowSimilarityError:
-                raise
-            except Exception:
-                data.update(image_fields)
+            data.update(image_fields)
+            response = self._request_with_fallback((("POST", path) for path in paths), data=data)
+            return (
+                self._extract_message(response, "Blacklist person created successfully."),
+                self._extract_person_id(response),
+            )
 
         response = self._request_with_fallback((("POST", path) for path in paths), data=data)
         return (
@@ -106,14 +100,8 @@ class FaceBlacklistService(FaceWhitelistService):
             f"{self._collection_path()}/add_image/{person_id}/",
         )
         image_fields = self._image_request_fields(image_path)
-        try:
-            response = self._multipart_request("POST", paths, image_path, payload=image_fields)
-            return self._extract_message(response, "Face image added successfully.")
-        except LowSimilarityError:
-            raise
-        except Exception:
-            response = self._request_with_fallback((("POST", path) for path in paths), data=image_fields)
-            return self._extract_message(response, "Face image added successfully.")
+        response = self._request_with_fallback((("POST", path) for path in paths), data=image_fields)
+        return self._extract_message(response, "Face image added successfully.")
 
     def delete_template_image(self, person_id: str, template_id: str) -> str:
         response = self._request_with_fallback(

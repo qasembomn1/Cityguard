@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
-    QPushButton,
+
     QSizePolicy,
     QVBoxLayout,
     QWidget,
@@ -802,6 +802,7 @@ class PlaybackPage(QWidget):
         self._camera_item_guard = False
         self.camera_checkboxes: dict[int, PrimeCheckBox] = {}
         self.camera_color_dots: dict[int, QLabel] = {}
+        self._camera_request_token = 0
         self._day_request_token = 0
         self._range_request_token = 0
 
@@ -812,13 +813,20 @@ class PlaybackPage(QWidget):
         self.player_poll_timer.setInterval(1000)
         self.player_poll_timer.timeout.connect(self._sync_from_players)
 
-        QTimer.singleShot(0, self._load_initial_data)
-
     def closeEvent(self, event) -> None:
         self.player_poll_timer.stop()
         for player in self.players:
             player.clear("Playback stopped.")
         super().closeEvent(event)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._load_initial_data()
+        QTimer.singleShot(0, self._restore_visible_playback)
+
+    def hideEvent(self, event) -> None:
+        self.player_poll_timer.stop()
+        super().hideEvent(event)
 
     def _build_ui(self) -> None:
         self.setObjectName("playbackPage")
@@ -1118,6 +1126,8 @@ class PlaybackPage(QWidget):
 
     def _load_initial_data(self) -> None:
         self._set_page_status("Loading cameras...")
+        self._camera_request_token += 1
+        token = self._camera_request_token
 
         def job() -> object:
             auth_service = AuthService()
@@ -1125,27 +1135,70 @@ class PlaybackPage(QWidget):
             camera_service = CameraService()
             cameras = camera_service.list_cameras(getattr(user, "department_id", None))
             return {
+                "token": token,
                 "user_name": str(getattr(user, "name", "") or "User"),
                 "cameras": cameras,
             }
 
         task = _Task(job)
         task.signals.result.connect(self._on_initial_data_loaded)
-        task.signals.error.connect(self._on_initial_data_error)
+        task.signals.error.connect(lambda text, t=token: self._on_initial_data_error(t, text))
         self.thread_pool.start(task)
 
     def _on_initial_data_loaded(self, payload: object) -> None:
         data = payload if isinstance(payload, dict) else {}
+        token = int(data.get("token") or 0)
+        if token != self._camera_request_token:
+            return
+
         self.current_user_name = str(data.get("user_name") or "User")
         cameras = data.get("cameras")
         self.cameras = list(cameras) if isinstance(cameras, list) else []
         self.cameras_by_id = {int(camera.id): camera for camera in self.cameras}
+        available_camera_ids = set(self.cameras_by_id)
+        previous_selected_ids = list(self.selected_camera_ids)
+        self.selected_camera_ids = [
+            camera_id for camera_id in previous_selected_ids if camera_id in available_camera_ids
+        ]
+        selection_changed = previous_selected_ids != self.selected_camera_ids
+        if selection_changed:
+            self.segments_by_camera = {
+                camera_id: self.segments_by_camera.get(camera_id, [])
+                for camera_id in self.selected_camera_ids
+            }
         self._populate_camera_list()
         self._set_page_status(f"{len(self.cameras)} cameras loaded for {self.current_user_name}.")
+        if not self.selected_camera_ids and previous_selected_ids:
+            self.available_days = []
+            self.selected_date = ""
+            self._update_calendar_disabled_dates([])
+            self._clear_playback_state("Select cameras to load playback.")
+            return
+        if selection_changed:
+            self._request_available_days()
+            if self.selected_date:
+                self._request_available_ranges(seek_time=self.current_time)
 
-    def _on_initial_data_error(self, text: str) -> None:
+    def _on_initial_data_error(self, token: int, text: str) -> None:
+        if token != self._camera_request_token:
+            return
         self._set_page_status("Unable to load cameras.")
         self._toast_error("Playback", text or "Failed to load cameras.")
+
+    def _restore_visible_playback(self) -> None:
+        if not self.isVisible() or not self.selected_camera_ids:
+            return
+        self._request_available_days()
+        if not self.selected_date:
+            self._clear_playback_state("Select cameras and a recorded day.")
+            return
+        if not self.segments_by_camera:
+            self._request_available_ranges(seek_time=self.current_time)
+            return
+        self.date_chip.setText(self.selected_date)
+        self.timeline.set_data(self.selected_camera_ids, self._camera_name_map(), self.segments_by_camera)
+        self._sync_summary()
+        self._load_streams(self.current_time)
 
     def _populate_camera_list(self) -> None:
         with QSignalBlocker(self.camera_list):
@@ -1450,7 +1503,6 @@ class PlaybackPage(QWidget):
         self._player_offsets = {}
         loaded_any = False
         active_ids = list(self.selected_camera_ids[:4])
-        self._rebuild_players_grid(active_ids)
 
         for index, player in enumerate(self.players):
             if index >= len(active_ids):

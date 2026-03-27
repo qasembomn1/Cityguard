@@ -28,7 +28,6 @@ from app.constants._init_ import Constants
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PySide6.QtWidgets import (
     QApplication,
-    QFileDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -56,6 +55,7 @@ from app.ui.button import PrimeButton
 from app.ui.checkbox import PrimeCheckBox
 from app.ui.date_picker import _CalendarPopup
 from app.ui.dialog import PrimeDialog
+from app.ui.file_browser_dialog import choose_restricted_save_file_path
 from app.ui.input import PrimeInput
 from app.ui.multiselect import PrimeMultiSelect
 from app.ui.select import PrimeSelect
@@ -854,8 +854,8 @@ class LprSearchPage(QWidget):
         self.search_store = search_store or LprSearchStore(LprSearchService())
         self.net = QNetworkAccessManager(self)
 
-        self.filter_panel_open = False
-        self.filters_window_visible = False
+        self.filter_panel_open = True
+        self.filters_window_visible = True
         self.grid_view = False
         self.grid_columns = 3
         self.rows_per_page = 20
@@ -2296,7 +2296,7 @@ class LprSearchPage(QWidget):
     def export_csv(self) -> None:
         if not self.search_store.results:
             return
-        path, _ = QFileDialog.getSaveFileName(
+        path = choose_restricted_save_file_path(
             self,
             "Export LPR Search",
             os.path.expanduser("~/LPRSearch.csv"),
